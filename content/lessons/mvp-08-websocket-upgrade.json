@@ -1,0 +1,124 @@
+{
+  "id": "mvp-08-websocket-upgrade",
+  "chapter": 2,
+  "order": 8,
+  "title": "WebSocket Upgrade Failure",
+  "summary": "Fix the /chat/ handshake failure and explain Upgrade, Connection, HTTP/1.1, and timeout handling.",
+  "difficulty": "intermediate",
+  "sourceSkills": [
+    "nginx-websocket-proxy-configuration"
+  ],
+  "prerequisites": [
+    "mvp-04-first-reverse-proxy",
+    "mvp-05-uri-rewrite"
+  ],
+  "scenario": {
+    "persona": "Backend engineer taking over a chat service",
+    "businessContext": "The frontend already connects to /chat/ over WebSocket, but the browser keeps reconnecting. Repair the handshake and keep the connection alive.",
+    "topology": [
+      { "id": "browser", "type": "client", "label": "Browser" },
+      { "id": "nginx", "type": "proxy", "label": "Nginx" },
+      { "id": "chat-upstream", "type": "upstream", "label": "Chat Service" }
+    ],
+    "trafficSamples": [
+      {
+        "id": "ws-handshake",
+        "label": "Chat handshake request",
+        "request": {
+          "method": "GET",
+          "path": "/chat/",
+          "headers": {
+            "Host": "chat.example.local",
+            "Upgrade": "websocket",
+            "Connection": "Upgrade"
+          }
+        }
+      }
+    ],
+    "initialConfig": "upstream chat_backend {\n    server 127.0.0.1:9001;\n}\n\nserver {\n    listen 80;\n    server_name chat.example.local;\n\n    location /chat/ {\n        proxy_pass http://chat_backend;\n    }\n}\n",
+    "editableBlocks": [
+      {
+        "id": "chat-location",
+        "title": "Chat proxy config",
+        "mode": "text"
+      }
+    ],
+    "observability": {
+      "panels": [
+        "request-headers",
+        "response-headers",
+        "error-log",
+        "connection-timeline",
+        "upstream-trace"
+      ]
+    }
+  },
+  "objectives": {
+    "mustPass": [
+      {
+        "id": "websocket-returns-101",
+        "description": "The WebSocket handshake must return HTTP 101.",
+        "request": {
+          "method": "GET",
+          "path": "/chat/",
+          "headers": {
+            "Host": "chat.example.local",
+            "Upgrade": "websocket",
+            "Connection": "Upgrade"
+          }
+        },
+        "expect": {
+          "status": 101,
+          "headersInclude": {
+            "Connection": "upgrade"
+          },
+          "locationMatched": "location /chat/"
+        }
+      }
+    ],
+    "hiddenTests": [
+      {
+        "id": "http11-required",
+        "description": "Verify that proxy_http_version 1.1 is explicitly enabled."
+      },
+      {
+        "id": "timeout-kept-alive",
+        "description": "Verify that the connection is not dropped after 60 seconds because of read timeout."
+      },
+      {
+        "id": "safe-connection-header",
+        "description": "In expert mode, verify that normal requests are not incorrectly forced to upgrade."
+      }
+    ],
+    "scoreRules": {
+      "correctness": 45,
+      "stability": 25,
+      "performance": 10,
+      "maintainability": 20
+    }
+  },
+  "explanation": {
+    "whyItWorks": [
+      "WebSocket handshakes depend on the HTTP/1.1 upgrade mechanism. A plain proxy_pass is not enough.",
+      "Upgrade and Connection must be forwarded correctly so the upstream can return 101 Switching Protocols.",
+      "Long-lived connections also need timeout tuning, or the proxy may close them unexpectedly."
+    ],
+    "commonMistakes": [
+      {
+        "title": "Configure proxy_pass only",
+        "reason": "A normal HTTP proxy does not automatically handle WebSocket upgrades."
+      },
+      {
+        "title": "Forget proxy_http_version 1.1",
+        "reason": "The upgrade mechanism depends on HTTP/1.1."
+      },
+      {
+        "title": "Always set Connection to upgrade",
+        "reason": "That may pass a basic level but creates side effects for normal requests. Expert mode should prefer map."
+      }
+    ],
+    "recommendedReading": [
+      "nginx-websocket-proxy-configuration"
+    ]
+  }
+}

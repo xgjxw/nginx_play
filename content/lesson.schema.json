@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/nginx-learning-game/lesson.schema.json",
+  "title": "Nginx Learning Game Lesson",
+  "type": "object",
+  "required": [
+    "id",
+    "chapter",
+    "order",
+    "title",
+    "summary",
+    "difficulty",
+    "sourceSkills",
+    "scenario",
+    "objectives",
+    "explanation"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "chapter": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["intro", "basic", "intermediate", "advanced"]
+    },
+    "sourceSkills": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "prerequisites": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "scenario": {
+      "type": "object",
+      "required": [
+        "persona",
+        "businessContext",
+        "topology",
+        "trafficSamples",
+        "initialConfig",
+        "editableBlocks",
+        "observability"
+      ],
+      "properties": {
+        "persona": {
+          "type": "string"
+        },
+        "businessContext": {
+          "type": "string"
+        },
+        "topology": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "type", "label"],
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string" },
+              "label": { "type": "string" }
+            }
+          }
+        },
+        "trafficSamples": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "request"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "request": {
+                "type": "object",
+                "required": ["method", "path", "headers"],
+                "properties": {
+                  "method": { "type": "string" },
+                  "path": { "type": "string" },
+                  "headers": { "type": "object" }
+                }
+              }
+            }
+          }
+        },
+        "initialConfig": {
+          "type": "string"
+        },
+        "editableBlocks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "title", "mode"],
+            "properties": {
+              "id": { "type": "string" },
+              "title": { "type": "string" },
+              "mode": {
+                "type": "string",
+                "enum": ["cards", "structured", "text"]
+              }
+            }
+          }
+        },
+        "observability": {
+          "type": "object",
+          "required": ["panels"],
+          "properties": {
+            "panels": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "objectives": {
+      "type": "object",
+      "required": ["mustPass", "hiddenTests", "scoreRules"],
+      "properties": {
+        "mustPass": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "description", "request", "expect"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" },
+              "request": {
+                "type": "object",
+                "required": ["method", "path", "headers"],
+                "properties": {
+                  "method": { "type": "string" },
+                  "path": { "type": "string" },
+                  "headers": { "type": "object" }
+                }
+              },
+              "expect": {
+                "type": "object",
+                "required": ["status"],
+                "properties": {
+                  "status": { "type": "integer" },
+                  "bodyIncludes": { "type": "string" },
+                  "headersInclude": { "type": "object" },
+                  "upstreamPath": { "type": "string" },
+                  "locationMatched": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "hiddenTests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "description"],
+            "properties": {
+              "id": { "type": "string" },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "scoreRules": {
+          "type": "object",
+          "required": ["correctness", "stability", "performance", "maintainability"],
+          "properties": {
+            "correctness": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "stability": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "performance": { "type": "integer", "minimum": 0, "maximum": 100 },
+            "maintainability": { "type": "integer", "minimum": 0, "maximum": 100 }
+          }
+        }
+      }
+    },
+    "explanation": {
+      "type": "object",
+      "required": ["whyItWorks", "commonMistakes", "recommendedReading"],
+      "properties": {
+        "whyItWorks": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "commonMistakes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["title", "reason"],
+            "properties": {
+              "title": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "recommendedReading": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

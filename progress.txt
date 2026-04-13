@@ -1,0 +1,4 @@
+# Nginx Learning Game Education Impact
+
+- New Ralph run created to make the game educational rather than only interactive.
+- Focus areas: teaching metadata, misconception-driven hints, explanation-first feedback, and mastery recaps.

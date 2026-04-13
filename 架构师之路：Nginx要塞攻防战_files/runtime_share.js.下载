@@ -1,0 +1,4684 @@
+(function (global) {
+  'use strict';
+
+  /* __RUNTIME_SHARE_CONFIG_START__ */
+  var DEFAULT_LOCALE = 'zh-CN';
+  var DEFAULT_DEPENDENCY_URLS = {
+    qrcodejs: 'https://registry.npmmirror.com/qrcodejs/1.0.0/files/qrcode.min.js',
+    html2canvasPro: 'https://registry.npmmirror.com/html2canvas-pro/1.6.7/files/dist/html2canvas-pro.min.js'
+  };
+  var LOCALE_MESSAGES = {
+    'zh-CN': {
+      panelTitle: '分享',
+      title: function (context) { return context.shareTitle || ''; },
+      subtitle: function (context) { return context.shareSubtitle || ''; },
+      badge: function (context) { return context.shareBadge || ''; },
+      description: function (context) { return context.shareDescription || ''; },
+      summaryTitle: '',
+      summaryEmpty: '可通过 summary.items 配置关键数据摘要。',
+      linkLabel: '当前页面',
+      qrTitle: '扫码继续浏览',
+      qrCaption: '',
+      saveHintWeChat: '微信内置浏览器通常不支持直接下载，请长按图片保存。',
+      saveHintDesktop: '桌面端可右键图片另存为。',
+      saveHintMobile: '移动端可长按图片保存。',
+      loading: '正在生成分享图...',
+      errorTitle: '分享图生成失败',
+      errorRetry: '重试',
+      download: '保存分享图',
+      copyLink: '复制文案链接',
+      regenerate: '重新生成',
+      close: '关闭',
+      unknownError: '未知错误',
+      genericShareError: '分享图生成失败。',
+      copySuccess: '文案和链接已复制，可直接发送给朋友。',
+      copyFailed: '复制失败，请手动复制当前页面地址。',
+      errorMissingQRCode: '缺少 QRCode 依赖，请先引入 qrcodejs。',
+      errorInvalidQrText: '二维码链接不能为空。',
+      errorQrRender: '二维码生成失败。',
+      errorMissingHtml2canvas: '缺少 html2canvas 依赖，请先引入 html2canvas-pro。',
+      errorNoShareImage: '当前还没有可下载的分享图。',
+      softHookFailed: function (context) { return (context && context.name ? context.name : 'Hook') + ' 执行失败，已忽略并继续。'; },
+      softRendererFailed: function (context) { return (context && context.name ? context.name : 'Renderer') + ' 渲染失败，已回退到默认实现。'; }
+    }
+  };
+  /* __RUNTIME_SHARE_CONFIG_END__ */
+  var SCRIPT_LOAD_CACHE = {};
+
+  function isPlainObject(value) {
+    return Object.prototype.toString.call(value) === '[object Object]';
+  }
+
+  function toArray(value) {
+    if (Array.isArray(value)) return value.slice();
+    if (value === undefined || value === null) return [];
+    return [value];
+  }
+
+  function trimString(value) {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function normalizeTextContent(value) {
+    return trimString(value).replace(/\s+/g, ' ');
+  }
+
+  function containsUrl(text) {
+    return /https?:\/\/\S+/i.test(trimString(text));
+  }
+
+  function normalizeLocale(value) {
+    var normalized = trimString(value).replace(/_/g, '-').toLowerCase();
+    if (!normalized) return '';
+    if (normalized.indexOf('zh') === 0) return 'zh-CN';
+    if (normalized.indexOf('en') === 0) return 'en';
+    return '';
+  }
+
+  function detectBrowserLocale() {
+    var languages;
+    var index;
+    var normalized;
+    if (!global.navigator) return DEFAULT_LOCALE;
+    languages = Array.isArray(global.navigator.languages) ? global.navigator.languages : [];
+    for (index = 0; index < languages.length; index += 1) {
+      normalized = normalizeLocale(languages[index]);
+      if (normalized) return normalized;
+    }
+    normalized = normalizeLocale(global.navigator.language || global.navigator.userLanguage || '');
+    return normalized || DEFAULT_LOCALE;
+  }
+
+  function resolveLocale(value, useBrowserFallback, fallbackLocale) {
+    var normalized = normalizeLocale(value);
+    if (normalized) return normalized;
+    if (trimString(value)) return fallbackLocale || DEFAULT_LOCALE;
+    if (useBrowserFallback !== false) return detectBrowserLocale();
+    return fallbackLocale || DEFAULT_LOCALE;
+  }
+
+  function resolveValue(value, context, fallback) {
+    try {
+      if (typeof value === 'function') {
+        return value(context || {});
+      }
+``    } catch {
+      return fallback;
+    }
+    return value === undefined ? fallback : value;
+  }
+
+  function mergeSection(base, extra) {
+    var result = {};
+    var key;
+    var source = isPlainObject(extra) ? extra : {};
+    for (key in base) {
+      if (Object.prototype.hasOwnProperty.call(base, key)) {
+        result[key] = base[key];
+      }
+    }
+    for (key in source) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        result[key] = source[key];
+      }
+    }
+    return result;
+  }
+
+  function mergeNestedSections(base, extra) {
+    var result = mergeSection(base, {});
+    var key;
+    var source = isPlainObject(extra) ? extra : {};
+    for (key in source) {
+      if (!Object.prototype.hasOwnProperty.call(source, key)) continue;
+      if (isPlainObject(result[key]) && isPlainObject(source[key])) {
+        result[key] = mergeSection(result[key], source[key]);
+      } else {
+        result[key] = source[key];
+      }
+    }
+    return result;
+  }
+
+  function ensure(condition, code, message) {
+    if (!condition) {
+      var error = new Error(message || 'Runtime share scaffold error');
+      error.name = 'RuntimeShareError';
+      error.code = code || 'RUNTIME_SHARE_ERROR';
+      throw error;
+    }
+  }
+
+  function sanitizeFileName(name) {
+    var normalized = trimString(name || 'share-image');
+    normalized = normalized.replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-');
+    normalized = normalized.replace(/-+/g, '-').replace(/^-|-$/g, '');
+    return normalized || 'share-image';
+  }
+
+  function setStyles(element, styles) {
+    var key;
+    if (!element || !styles) return element;
+    for (key in styles) {
+      if (Object.prototype.hasOwnProperty.call(styles, key)) {
+        element.style[key] = styles[key];
+      }
+    }
+    return element;
+  }
+
+  function createElement(tagName, className, text) {
+    var element = document.createElement(tagName);
+    if (className) {
+      element.className = className;
+    }
+    if (text !== undefined && text !== null) {
+      element.textContent = String(text);
+    }
+    return element;
+  }
+
+  function appendClassName(element, className) {
+    var normalized = trimString(className);
+    if (!element || !normalized) return element;
+    if (element.className) {
+      element.className += ' ' + normalized;
+    } else {
+      element.className = normalized;
+    }
+    return element;
+  }
+
+  function appendChildren(element, children) {
+    var items = toArray(children);
+    var index;
+    for (index = 0; index < items.length; index += 1) {
+      if (items[index]) {
+        element.appendChild(items[index]);
+      }
+    }
+    return element;
+  }
+
+  function resolveElement(target) {
+    if (!target) return null;
+    if (typeof target === 'string') {
+      return document.querySelector(target);
+    }
+    if (target.nodeType === 1 || target === document.body || target === document.documentElement) {
+      return target;
+    }
+    return null;
+  }
+
+  function isConnectedElement(target) {
+    if (!target) return false;
+    if (target === document.body || target === document.documentElement) return true;
+    if (target.nodeType !== 1) return false;
+    if (target.isConnected !== undefined) return target.isConnected;
+    return !!(document.documentElement && document.documentElement.contains(target));
+  }
+
+  function toAbsoluteUrl(value) {
+    var raw = trimString(value);
+    if (!raw) return '';
+    try {
+      return new URL(raw, global.location && global.location.href ? global.location.href : undefined).toString();
+    } catch {
+      try {
+        var anchor = document.createElement('a');
+        anchor.href = raw;
+        return anchor.href || raw;
+      } catch {
+        return raw;
+      }
+    }
+  }
+
+  function resolveUrlText(value, baseUrl) {
+    var raw = trimString(value);
+    var base = trimString(baseUrl);
+    if (!raw) return '';
+    if (base) {
+      try {
+        return new URL(raw, base).toString();
+      } catch {
+        // Fall through to generic conversion and finally the raw value.
+      }
+    }
+    return toAbsoluteUrl(raw) || raw;
+  }
+
+  function resolveQrCodeText(config, context) {
+    var explicitText = trimString(context && context.qrText);
+    var qrPath = trimString(context && context.qrPath);
+    var configPath = trimString(resolveValue(config && config.path, context, ''));
+    var fallbackText = trimString(resolveValue(config && config.text, context, context && context.pageUrl));
+    var baseUrl = trimString(context && context.pageUrl) || trimString(global.location && global.location.href);
+    if (explicitText) {
+      return explicitText;
+    }
+    if (qrPath) {
+      return resolveUrlText(qrPath, baseUrl);
+    }
+    if (configPath) {
+      return resolveUrlText(configPath, baseUrl);
+    }
+    return fallbackText || baseUrl || '';
+  }
+
+  function getQrFallbackText(context) {
+    return trimString(context && context.pageUrl) || trimString(global.location && global.location.href);
+  }
+
+  function elementMatches(element, selector) {
+    if (!element || !selector || !element.nodeType || element.nodeType !== 1) return false;
+    var fn = element.matches || element.matchesSelector || element.msMatchesSelector || element.webkitMatchesSelector || element.mozMatchesSelector;
+    if (typeof fn !== 'function') return false;
+    try {
+      return fn.call(element, selector);
+    } catch {
+      return false;
+    }
+  }
+
+  function copyComputedStyles(source, target) {
+    if (!source || !target || source.nodeType !== 1 || target.nodeType !== 1) return target;
+    if (typeof global.getComputedStyle !== 'function') return target;
+    var computed;
+    var index;
+    var propertyName;
+    try {
+      computed = global.getComputedStyle(source);
+    } catch {
+      computed = null;
+    }
+    if (!computed) return target;
+    for (index = 0; index < computed.length; index += 1) {
+      propertyName = computed[index];
+      if (!propertyName) continue;
+      target.style.setProperty(propertyName, computed.getPropertyValue(propertyName), computed.getPropertyPriority(propertyName));
+    }
+    return target;
+  }
+
+  function copyCanvasBitmap(source, target) {
+    if (!source || !target || !source.tagName || !target.tagName) return target;
+    if (source.tagName.toUpperCase() !== 'CANVAS' || target.tagName.toUpperCase() !== 'CANVAS') return target;
+    target.width = source.width;
+    target.height = source.height;
+    try {
+      var context2d = target.getContext && target.getContext('2d');
+      if (context2d && typeof context2d.drawImage === 'function') {
+        context2d.drawImage(source, 0, 0);
+      }
+    } catch {}
+    return target;
+  }
+
+  function syncFormFieldState(source, target) {
+    if (!source || !target || !source.tagName || !target.tagName) return target;
+    var tagName = source.tagName.toUpperCase();
+    if (tagName === 'INPUT') {
+      target.value = source.value;
+      target.checked = !!source.checked;
+      if (source.type === 'radio') {
+        target.name = '';
+      }
+      return target;
+    }
+    if (tagName === 'TEXTAREA') {
+      target.value = source.value;
+      return target;
+    }
+    if (tagName === 'SELECT') {
+      target.selectedIndex = source.selectedIndex;
+      target.value = source.value;
+    }
+    return target;
+  }
+
+  function shouldIgnoreShareClone(element, ignoreSelectors) {
+    var selectors = toArray(ignoreSelectors);
+    var index;
+    var tagName;
+    if (!element || element.nodeType !== 1) return false;
+    if (element.getAttribute && element.getAttribute('data-runtime-share-keep') === 'true') {
+      return false;
+    }
+    if (element.getAttribute && element.getAttribute('data-runtime-share-ignore') === 'true') {
+      return true;
+    }
+    tagName = trimString(element.tagName).toUpperCase();
+    if (tagName === 'BUTTON' || tagName === 'INPUT' || tagName === 'SELECT' || tagName === 'TEXTAREA') {
+      return true;
+    }
+    for (index = 0; index < selectors.length; index += 1) {
+      if (typeof selectors[index] === 'string' && selectors[index] && elementMatches(element, selectors[index])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function syncClonedNodeTree(sourceNode, targetNode, options) {
+    if (!sourceNode || !targetNode || sourceNode.nodeType !== targetNode.nodeType) return targetNode;
+
+    if (sourceNode.nodeType === 1) {
+      if (options.inlineStyles !== false) {
+        copyComputedStyles(sourceNode, targetNode);
+      }
+      if (options.removeIds !== false && targetNode.removeAttribute) {
+        targetNode.removeAttribute('id');
+      }
+      syncFormFieldState(sourceNode, targetNode);
+      copyCanvasBitmap(sourceNode, targetNode);
+      if (typeof sourceNode.scrollTop === 'number') targetNode.scrollTop = sourceNode.scrollTop;
+      if (typeof sourceNode.scrollLeft === 'number') targetNode.scrollLeft = sourceNode.scrollLeft;
+    }
+
+    var sourceChildren = sourceNode.childNodes || [];
+    var targetChildren = targetNode.childNodes || [];
+    var index;
+    var sourceChild;
+    var targetChild;
+    for (index = targetChildren.length - 1; index >= 0; index -= 1) {
+      sourceChild = sourceChildren[index];
+      targetChild = targetChildren[index];
+      if (!sourceChild || !targetChild) continue;
+      if (sourceChild.nodeType === 1 && shouldIgnoreShareClone(sourceChild, options.ignoreSelectors)) {
+        targetNode.removeChild(targetChild);
+        continue;
+      }
+      syncClonedNodeTree(sourceChild, targetChild, options);
+    }
+    return targetNode;
+  }
+
+  function normalizeClonedShareTree(sourceNode, targetNode, rootWidth, isRoot) {
+    if (!sourceNode || !targetNode || sourceNode.nodeType !== targetNode.nodeType) return targetNode;
+
+    if (sourceNode.nodeType === 1) {
+      var style = getComputedStyleSafe(sourceNode);
+      var rect = typeof sourceNode.getBoundingClientRect === 'function' ? sourceNode.getBoundingClientRect() : null;
+      var width = rect && rect.width ? rect.width : 0;
+      var display = trimString(style && style.display);
+      if (style) {
+        if (display && display !== 'inline' && display !== 'contents') {
+          setStyles(targetNode, {
+            maxWidth: '100%',
+            minWidth: '0',
+            boxSizing: 'border-box',
+          });
+        }
+        if (style.position === 'sticky') {
+          setStyles(targetNode, {
+            position: 'static',
+            top: 'auto',
+            right: 'auto',
+            bottom: 'auto',
+            left: 'auto',
+            zIndex: 'auto',
+          });
+        }
+        if (!isRoot && rootWidth > 0 && width >= rootWidth * 0.96 && display && display !== 'inline' && display !== 'contents') {
+          setStyles(targetNode, {
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: '0',
+            marginLeft: '0',
+            marginRight: '0',
+            boxSizing: 'border-box',
+          });
+        }
+      }
+    }
+
+    var sourceChildren = sourceNode.childNodes || [];
+    var targetChildren = targetNode.childNodes || [];
+    var index;
+    for (index = 0; index < sourceChildren.length && index < targetChildren.length; index += 1) {
+      normalizeClonedShareTree(sourceChildren[index], targetChildren[index], rootWidth, false);
+    }
+    return targetNode;
+  }
+
+  function cloneNodeForShare(target, options) {
+    var source = resolveElement(target);
+    var config = isPlainObject(options) ? options : {};
+    var clone;
+    var rect;
+    var sourceRect;
+    if (!isConnectedElement(source)) return null;
+    if (shouldIgnoreShareClone(source, config.ignoreSelectors)) return null;
+
+    clone = source.cloneNode(config.deep !== false);
+    syncClonedNodeTree(source, clone, {
+      inlineStyles: config.inlineStyles !== false,
+      removeIds: config.removeIds !== false,
+      ignoreSelectors: config.ignoreSelectors,
+    });
+    clone.setAttribute('data-runtime-share-cloned', 'true');
+
+    if (config.keepSize === false) {
+      setStyles(clone, {
+        height: 'auto',
+        minHeight: '0',
+        maxHeight: 'none',
+        overflow: 'visible',
+        overflowX: 'visible',
+        overflowY: 'visible',
+        flex: 'none',
+        flexBasis: 'auto',
+        inset: 'auto',
+        top: 'auto',
+        right: 'auto',
+        bottom: 'auto',
+        left: 'auto',
+        position: 'static',
+        transform: 'none',
+      });
+      sourceRect = typeof source.getBoundingClientRect === 'function' ? source.getBoundingClientRect() : null;
+      normalizeClonedShareTree(source, clone, sourceRect && sourceRect.width ? sourceRect.width : 0, true);
+    }
+
+    if (config.keepSize !== false && typeof source.getBoundingClientRect === 'function') {
+      rect = source.getBoundingClientRect();
+      if (rect && rect.width > 0) {
+        clone.style.width = rect.width + 'px';
+        clone.style.maxWidth = '100%';
+        clone.style.boxSizing = 'border-box';
+        clone.style.flex = 'none';
+      }
+    }
+
+    if (trimString(config.className)) {
+      appendClassName(clone, config.className);
+    }
+    if (isPlainObject(config.styles)) {
+      setStyles(clone, config.styles);
+    }
+    return clone;
+  }
+
+  function normalizeImageType(value) {
+    var normalized = trimString(value).toLowerCase();
+    if (!normalized) return 'image/jpeg';
+    if (normalized === 'jpg') return 'image/jpeg';
+    if (normalized === 'jpeg') return 'image/jpeg';
+    if (normalized === 'image/jpg') return 'image/jpeg';
+    if (normalized === 'png' || normalized === 'image/png') return 'image/png';
+    if (normalized === 'webp' || normalized === 'image/webp') return 'image/webp';
+    return 'image/jpeg';
+  }
+
+  function normalizeImageQuality(value, imageType, fallback) {
+    var normalizedFallback = typeof fallback === 'number' ? fallback : (imageType === 'image/png' ? 1 : 0.92);
+    if (typeof value !== 'number' || !isFinite(value)) return normalizedFallback;
+    if (value < 0) return 0;
+    if (value > 1) return 1;
+    return value;
+  }
+
+  function parseCssAlpha(value) {
+    var raw = trimString(value);
+    var parsed;
+    if (!raw) return 1;
+    parsed = parseFloat(raw);
+    if (!isFinite(parsed)) return 1;
+    if (/%$/.test(raw)) {
+      return Math.max(0, Math.min(1, parsed / 100));
+    }
+    return Math.max(0, Math.min(1, parsed));
+  }
+
+  function parseCssPercentOrNumber(value) {
+    var raw = trimString(value);
+    var parsed;
+    if (!raw) return NaN;
+    parsed = parseFloat(raw);
+    if (!isFinite(parsed)) return NaN;
+    if (/%$/.test(raw)) {
+      return parsed / 100;
+    }
+    return parsed;
+  }
+
+  function toSrgbChannel(value) {
+    var normalized = Math.max(0, Math.min(1, value));
+    if (normalized <= 0.0031308) {
+      return normalized * 12.92;
+    }
+    return 1.055 * Math.pow(normalized, 1 / 2.4) - 0.055;
+  }
+
+  function parseOklabColor(value, isPolar) {
+    var raw = trimString(value);
+    var body = raw.replace(/^okl(?:ab|ch)\(/i, '').replace(/\)$/i, '');
+    var alpha = 1;
+    var segments;
+    var parts;
+    var lightness;
+    var a;
+    var b;
+    var chroma;
+    var hue;
+    var l1;
+    var m1;
+    var s1;
+    var l;
+    var m;
+    var s;
+    var r;
+    var g;
+    var blue;
+    if (!body) return null;
+    segments = body.split('/');
+    if (segments.length > 2) return null;
+    if (segments.length === 2) {
+      alpha = parseCssAlpha(segments[1]);
+    }
+    parts = trimString(segments[0]).split(/\s+/).filter(Boolean);
+    if (parts.length < 3) return null;
+    lightness = parseCssPercentOrNumber(parts[0]);
+    if (!isFinite(lightness)) return null;
+    if (isPolar) {
+      chroma = parseFloat(parts[1]);
+      hue = parseFloat(parts[2]);
+      if (!isFinite(chroma) || !isFinite(hue)) return null;
+      a = chroma * Math.cos(hue * Math.PI / 180);
+      b = chroma * Math.sin(hue * Math.PI / 180);
+    } else {
+      a = parseFloat(parts[1]);
+      b = parseFloat(parts[2]);
+      if (!isFinite(a) || !isFinite(b)) return null;
+    }
+    l1 = lightness + 0.3963377774 * a + 0.2158037573 * b;
+    m1 = lightness - 0.1055613458 * a - 0.0638541728 * b;
+    s1 = lightness - 0.0894841775 * a - 1.291485548 * b;
+    l = l1 * l1 * l1;
+    m = m1 * m1 * m1;
+    s = s1 * s1 * s1;
+    r = toSrgbChannel(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s);
+    g = toSrgbChannel(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s);
+    blue = toSrgbChannel(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s);
+    return {
+      r: Math.round(r * 255),
+      g: Math.round(g * 255),
+      b: Math.round(blue * 255),
+      a: alpha,
+    };
+  }
+
+  function parseCssColor(value) {
+    var raw = trimString(value).toLowerCase();
+    var hex;
+    var match;
+    var parts;
+    if (!raw || raw === 'transparent') {
+      return raw === 'transparent' ? { r: 0, g: 0, b: 0, a: 0 } : null;
+    }
+    if (raw.charAt(0) === '#') {
+      hex = raw.slice(1);
+      if (hex.length === 3 || hex.length === 4) {
+        return {
+          r: parseInt(hex.charAt(0) + hex.charAt(0), 16),
+          g: parseInt(hex.charAt(1) + hex.charAt(1), 16),
+          b: parseInt(hex.charAt(2) + hex.charAt(2), 16),
+          a: hex.length === 4 ? parseInt(hex.charAt(3) + hex.charAt(3), 16) / 255 : 1,
+        };
+      }
+      if (hex.length === 6 || hex.length === 8) {
+        return {
+          r: parseInt(hex.slice(0, 2), 16),
+          g: parseInt(hex.slice(2, 4), 16),
+          b: parseInt(hex.slice(4, 6), 16),
+          a: hex.length === 8 ? parseInt(hex.slice(6, 8), 16) / 255 : 1,
+        };
+      }
+      return null;
+    }
+    match = raw.match(/^rgba?\(([^)]+)\)$/);
+    if (match) {
+      parts = match[1].split(',').map(function (part) {
+        return trimString(part);
+      });
+      if (parts.length < 3) return null;
+      return {
+        r: Math.max(0, Math.min(255, parseFloat(parts[0]))),
+        g: Math.max(0, Math.min(255, parseFloat(parts[1]))),
+        b: Math.max(0, Math.min(255, parseFloat(parts[2]))),
+        a: parts.length > 3 ? Math.max(0, Math.min(1, parseFloat(parts[3]))) : 1,
+      };
+    }
+    if (/^oklch\(/.test(raw)) {
+      return parseOklabColor(raw, true);
+    }
+    if (/^oklab\(/.test(raw)) {
+      return parseOklabColor(raw, false);
+    }
+    return null;
+  }
+
+  function isNearTransparentColorValue(rawValue, parsed) {
+    var raw = trimString(rawValue).toLowerCase();
+    if (!raw || raw === 'transparent') {
+      return true;
+    }
+    return !!parsed && parsed.a < 0.08;
+  }
+
+  function extractSolidColorFromCssImage(value, fallback) {
+    var raw = trimString(value);
+    var matches;
+    var index;
+    var parsed;
+    if (raw) {
+      matches = raw.match(/(?:oklch|oklab|rgba?)\([^)]*\)|#[0-9a-f]{3,8}/ig) || [];
+      for (index = 0; index < matches.length; index += 1) {
+        parsed = parseCssColor(matches[index]);
+        if (parsed && parsed.a > 0.18) {
+          return toRgbaString(parsed, 1);
+        }
+      }
+    }
+    parsed = parseCssColor(fallback);
+    if (parsed && parsed.a > 0.18) {
+      return toRgbaString(parsed, 1);
+    }
+    return '#0f172a';
+  }
+
+  function getColorAverage(parsed) {
+    if (!parsed) return 0;
+    return (parsed.r + parsed.g + parsed.b) / 3;
+  }
+
+  function isClearlyLightColor(parsed) {
+    return !!parsed
+      && parsed.a > 0.55
+      && getColorAverage(parsed) >= 214
+      && Math.min(parsed.r, parsed.g, parsed.b) >= 180;
+  }
+
+  function isClearlyDarkColor(parsed) {
+    return !!parsed
+      && parsed.a > 0.28
+      && getColorAverage(parsed) <= 150;
+  }
+
+  function toRgbaString(parsed, alphaOverride) {
+    var alpha = typeof alphaOverride === 'number' && isFinite(alphaOverride)
+      ? Math.max(0, Math.min(1, alphaOverride))
+      : (parsed && typeof parsed.a === 'number' ? Math.max(0, Math.min(1, parsed.a)) : 1);
+    if (!parsed) return '';
+    return 'rgba('
+      + Math.round(parsed.r) + ', '
+      + Math.round(parsed.g) + ', '
+      + Math.round(parsed.b) + ', '
+      + alpha + ')';
+  }
+
+  function getSanitizedQrLightColor(value, fallback) {
+    var raw = trimString(value) || trimString(fallback) || '#ffffff';
+    var parsed = parseCssColor(raw);
+    var minChannel;
+    var maxChannel;
+    var spread;
+    var average;
+    if (!parsed) return raw;
+    minChannel = Math.min(parsed.r, parsed.g, parsed.b);
+    maxChannel = Math.max(parsed.r, parsed.g, parsed.b);
+    spread = maxChannel - minChannel;
+    average = (parsed.r + parsed.g + parsed.b) / 3;
+    if (average >= 190 && minChannel >= 140 && spread >= 24) {
+      return '#ffffff';
+    }
+    return raw;
+  }
+
+  function isLikelyQrMedia(node, parent, mediaWidth, mediaHeight) {
+    var src = trimString(node && node.getAttribute ? (node.getAttribute('src') || node.getAttribute('data-src')) : '').toLowerCase();
+    var alt = trimString(node && node.getAttribute ? node.getAttribute('alt') : '').toLowerCase();
+    var parentText = trimString(parent && parent.textContent).toLowerCase();
+    var mediaCount = parent && parent.querySelectorAll ? parent.querySelectorAll('img, canvas, svg, video').length : 0;
+    if (!(mediaWidth > 0) || !(mediaHeight > 0)) {
+      return false;
+    }
+    if (Math.abs(mediaWidth - mediaHeight) > Math.max(12, mediaWidth * 0.08)) {
+      return false;
+    }
+    if (mediaWidth < 96 || mediaWidth > 260) {
+      return false;
+    }
+    if (alt.indexOf('qr') >= 0 || parentText.indexOf('\u626b\u7801') >= 0 || parentText.indexOf('qr') >= 0 || parentText.indexOf('scan') >= 0) {
+      return true;
+    }
+    return mediaCount === 1 && src.indexOf('data:image/') === 0;
+  }
+
+  function hasLikelyQrDescendant(node) {
+    var found = false;
+    if (!node || !node.querySelectorAll) {
+      return false;
+    }
+    Array.prototype.forEach.call(node.querySelectorAll('img, canvas, svg, video'), function (media) {
+      var size;
+      var parent;
+      if (found) {
+        return;
+      }
+      parent = media && media.parentNode && media.parentNode.nodeType === 1 ? media.parentNode : node;
+      size = getRenderTargetSize(media, null);
+      if (isLikelyQrMedia(media, parent, size.width, size.height)) {
+        found = true;
+      }
+    });
+    return found;
+  }
+
+  function hasLocalOppositeSurface(node, root, oppositeSurfaceCheck, minWidth, minHeight) {
+    var current = node;
+    while (current && current !== root && current.nodeType === 1) {
+      var currentStyle = getComputedStyleSafe(current);
+      var currentBg;
+      var currentSize;
+      if (current.__runtimeShareThemeSurface === true) {
+        current = current.parentNode;
+        continue;
+      }
+      if (!currentStyle || isOutOfFlowStyle(currentStyle) || hasLikelyQrDescendant(current)) {
+        current = current.parentNode;
+        continue;
+      }
+      currentBg = parseCssColor(currentStyle.backgroundColor);
+      currentSize = getRenderTargetSize(current, null);
+      if (oppositeSurfaceCheck(currentBg)
+          && currentSize.width > (minWidth || 56)
+          && currentSize.height > (minHeight || 24)
+          && !current.querySelector('img, canvas, svg, video')) {
+        return true;
+      }
+      current = current.parentNode;
+    }
+    return false;
+  }
+
+  function normalizeLayout(value) {
+    var layout = trimString(value).toLowerCase();
+    if (!layout) return '';
+    if (layout === 'portrait' || layout === 'vertical' || layout === 'mobile') return 'portrait';
+    if (layout === 'landscape' || layout === 'horizontal' || layout === 'desktop') return 'landscape';
+    if (layout === 'square') return 'square';
+    return '';
+  }
+
+  function getContextLayout(context) {
+    if (!context) return '';
+    return normalizeLayout(context.layout) || normalizeLayout(context.meta && context.meta.layout);
+  }
+
+  function inferLayoutFromDimensions(width, height) {
+    if (!(width > 0) || !(height > 0)) return '';
+    if (height >= width * 1.05) return 'portrait';
+    if (width >= height * 1.05) return 'landscape';
+    return 'square';
+  }
+
+  function toCssLength(value, fallback) {
+    if (typeof value === 'number' && isFinite(value)) {
+      return value + 'px';
+    }
+    value = trimString(value);
+    return value || fallback;
+  }
+
+  function toContainedMaxLength(value, fallback) {
+    var length = toCssLength(value, fallback || '');
+    if (!length) {
+      return '100%';
+    }
+    if (length === '100%') {
+      return '100%';
+    }
+    if (/^(min|max|clamp)\(/i.test(length)) {
+      return length;
+    }
+    return 'min(100%, ' + length + ')';
+  }
+
+  function toResponsivePreviewMaxLength(value, fallback, minPreferredPx) {
+    var rawLength = toCssLength(value, fallback || '');
+    var contained = toContainedMaxLength(rawLength, fallback || '');
+    var match = /^(-?\d+(?:\.\d+)?)px$/i.exec(rawLength);
+    if (match && minPreferredPx > 0 && parseFloat(match[1]) < minPreferredPx) {
+      return 'min(100%, ' + Math.round(minPreferredPx) + 'px)';
+    }
+    return contained;
+  }
+
+  function getPortraitPreviewPreferredWidth() {
+    var viewportWidth = typeof global.innerWidth === 'number' && isFinite(global.innerWidth) ? global.innerWidth : 0;
+    if (!(viewportWidth > 0)) {
+      return 720;
+    }
+    return Math.min(820, Math.max(720, Math.round(viewportWidth * 0.62)));
+  }
+
+  function getPortraitPosterPreferredWidth() {
+    var viewportWidth = typeof global.innerWidth === 'number' && isFinite(global.innerWidth) ? global.innerWidth : 0;
+    if (!(viewportWidth > 0)) {
+      return 620;
+    }
+    return Math.min(660, Math.max(600, Math.round(viewportWidth * 0.5)));
+  }
+
+  function clampPortraitPosterWidth(value, fallback) {
+    var rawLength = toCssLength(value, fallback || '');
+    var match = /^(-?\d+(?:\.\d+)?)px$/i.exec(rawLength);
+    var maxWidth = getPortraitPosterPreferredWidth();
+    if (match && maxWidth > 0 && parseFloat(match[1]) > maxWidth) {
+      return Math.round(maxWidth) + 'px';
+    }
+    return rawLength || fallback;
+  }
+
+  function isCompactModalViewport() {
+    var viewportWidth = typeof global.innerWidth === 'number' && isFinite(global.innerWidth) ? global.innerWidth : 0;
+    return viewportWidth > 0 && viewportWidth <= 480;
+  }
+
+  function getModalEdgePadding() {
+    return isCompactModalViewport() ? '12px' : '24px';
+  }
+
+  function getModalHeaderPadding() {
+    return isCompactModalViewport() ? '16px 16px 12px' : '24px 24px 16px';
+  }
+
+  function getModalBodyPadding() {
+    return isCompactModalViewport() ? '14px 14px 12px' : '22px 24px 18px';
+  }
+
+  function getModalFooterPadding() {
+    return isCompactModalViewport() ? '0 14px 14px' : '0 24px 24px';
+  }
+
+  function getPreviewWrapPadding(isPortrait) {
+    if (isCompactModalViewport()) {
+      return isPortrait ? '6px' : '8px';
+    }
+    return isPortrait ? '8px' : '12px';
+  }
+
+  function toPixelValue(value) {
+    if (typeof value === 'number' && isFinite(value)) {
+      return value;
+    }
+    value = trimString(value);
+    if (!value) {
+      return 0;
+    }
+    var parsed = parseFloat(value);
+    return isFinite(parsed) ? parsed : 0;
+  }
+
+  function toViewportPixelValue(value, viewportSize) {
+    var raw = trimString(value);
+    var parsed;
+    if (!raw) {
+      return 0;
+    }
+    parsed = parseFloat(raw);
+    if (!isFinite(parsed)) {
+      return 0;
+    }
+    if (/vh$/i.test(raw) && viewportSize > 0) {
+      return viewportSize * parsed / 100;
+    }
+    if (/vw$/i.test(raw) && viewportSize > 0) {
+      return viewportSize * parsed / 100;
+    }
+    if (/px$/i.test(raw) || /^[\d.]+$/.test(raw)) {
+      return parsed;
+    }
+    return 0;
+  }
+
+  function clampPixelValue(value, minValue, maxValue, fallback) {
+    var pixel = toPixelValue(value);
+    if (!(pixel > 0)) {
+      return fallback;
+    }
+    if (minValue > 0) {
+      pixel = Math.max(minValue, pixel);
+    }
+    if (maxValue > 0) {
+      pixel = Math.min(maxValue, pixel);
+    }
+    return Math.round(pixel) + 'px';
+  }
+
+  function getRenderTargetSize(target, renderOptions) {
+    var rect = null;
+    var width = 0;
+    var height = 0;
+
+    if (target && typeof target.getBoundingClientRect === 'function') {
+      try {
+        rect = target.getBoundingClientRect();
+      } catch {
+        rect = null;
+      }
+    }
+
+    width = Math.max(
+      renderOptions && renderOptions.width ? renderOptions.width : 0,
+      rect && rect.width ? rect.width : 0,
+      target && target.scrollWidth ? target.scrollWidth : 0,
+      target && target.offsetWidth ? target.offsetWidth : 0
+    );
+    height = Math.max(
+      renderOptions && renderOptions.height ? renderOptions.height : 0,
+      rect && rect.height ? rect.height : 0,
+      target && target.scrollHeight ? target.scrollHeight : 0,
+      target && target.offsetHeight ? target.offsetHeight : 0
+    );
+
+    return {
+      width: width,
+      height: height,
+    };
+  }
+
+  function getComputedStyleSafe(element) {
+    if (!element || typeof global.getComputedStyle !== 'function') {
+      return null;
+    }
+    try {
+      return global.getComputedStyle(element);
+    } catch {
+      return null;
+    }
+  }
+
+  function getElementChildren(element) {
+    return element && element.children ? Array.prototype.slice.call(element.children) : [];
+  }
+
+  function isOutOfFlowStyle(style) {
+    if (!style) return false;
+    return style.position === 'absolute' || style.position === 'fixed' || style.position === 'sticky';
+  }
+
+  function isLikelyIconCodePoint(codePoint) {
+    return (codePoint >= 0x2300 && codePoint <= 0x27BF)
+      || (codePoint >= 0x1F000 && codePoint <= 0x1FAFF);
+  }
+
+  function startsWithIconCharacter(value) {
+    var normalized = trimString(value);
+    if (!normalized || typeof normalized.codePointAt !== 'function') {
+      return false;
+    }
+    return isLikelyIconCodePoint(normalized.codePointAt(0));
+  }
+
+  function isStandaloneIconText(value) {
+    var normalized = trimString(value);
+    if (!normalized || normalized.length > 4 || !startsWithIconCharacter(normalized)) {
+      return false;
+    }
+    normalized = normalized.replace(/[\uFE0F\u200D\s]/g, '');
+    if (!normalized) {
+      return false;
+    }
+    return !/[A-Za-z0-9\u4e00-\u9fff]/.test(normalized.slice(1));
+  }
+
+  function resolveRenderScale(value, context, fallback, width, height, maxPixels) {
+    var scale = resolveValue(value, context, fallback);
+    if (typeof scale !== 'number' || !isFinite(scale) || scale <= 0) {
+      scale = typeof fallback === 'number' && isFinite(fallback) && fallback > 0 ? fallback : 1;
+    }
+    if (typeof maxPixels === 'number' && isFinite(maxPixels) && maxPixels > 0 && width > 0 && height > 0) {
+      var limitedScale = Math.sqrt(maxPixels / (width * height));
+      if (limitedScale > 0) {
+        scale = Math.min(scale, Math.max(1, limitedScale));
+      }
+    }
+    return scale;
+  }
+
+  function getImageExtension(imageType) {
+    if (imageType === 'image/png') return '.png';
+    if (imageType === 'image/webp') return '.webp';
+    return '.jpg';
+  }
+
+  function resolveLocalizedUrlMap(value, locale, fallbackMap) {
+    var normalizedLocale = resolveLocale(locale, false, DEFAULT_LOCALE);
+    var source = isPlainObject(value) ? value : (typeof value === 'string' ? { en: value, 'zh-CN': value } : {});
+    var fallback = isPlainObject(fallbackMap) ? fallbackMap : {};
+    return trimString(
+      source[normalizedLocale]
+      || source[DEFAULT_LOCALE]
+      || source.en
+      || source['zh-CN']
+      || fallback[normalizedLocale]
+      || fallback[DEFAULT_LOCALE]
+      || fallback.en
+      || fallback['zh-CN']
+      || ''
+    );
+  }
+
+  function loadExternalScript(url) {
+    var normalizedUrl = trimString(url);
+    ensure(normalizedUrl, 'MISSING_DEPENDENCY_URL', 'Dependency URL is required.');
+    if (SCRIPT_LOAD_CACHE[normalizedUrl]) {
+      return SCRIPT_LOAD_CACHE[normalizedUrl];
+    }
+
+    SCRIPT_LOAD_CACHE[normalizedUrl] = new Promise(function (resolve, reject) {
+      ensure(typeof document !== 'undefined' && typeof document.createElement === 'function', 'DEPENDENCY_LOAD_UNSUPPORTED', 'Current environment does not support dynamic script loading.');
+      var parent = document.head || document.body || document.documentElement;
+      ensure(parent, 'DEPENDENCY_LOAD_UNSUPPORTED', 'Current environment does not support dynamic script loading.');
+
+      var script = document.createElement('script');
+      script.src = normalizedUrl;
+      script.async = true;
+      script.onload = function () { resolve(normalizedUrl); };
+      script.onerror = function () {
+        reject(new Error('Failed to load dependency script: ' + normalizedUrl));
+      };
+      parent.appendChild(script);
+    }).catch(function (error) {
+      delete SCRIPT_LOAD_CACHE[normalizedUrl];
+      throw error;
+    });
+
+    return SCRIPT_LOAD_CACHE[normalizedUrl];
+  }
+
+  function isDesktopPointer() {
+    if (!global.navigator) return true;
+    var maxTouchPoints = typeof global.navigator.maxTouchPoints === 'number' ? global.navigator.maxTouchPoints : 0;
+    return !('ontouchstart' in global) && maxTouchPoints < 1;
+  }
+
+  function isWeChatBrowser() {
+    if (!global.navigator || !global.navigator.userAgent) return false;
+    return /MicroMessenger/i.test(global.navigator.userAgent);
+  }
+
+  function copyText(text) {
+    if (!trimString(text)) {
+      return Promise.resolve(false);
+    }
+    if (global.navigator && global.navigator.clipboard && typeof global.navigator.clipboard.writeText === 'function') {
+      return global.navigator.clipboard.writeText(text).then(function () { return true; }).catch(function () { return false; });
+    }
+    try {
+      var input = createElement('textarea');
+      input.value = text;
+      input.setAttribute('readonly', 'readonly');
+      setStyles(input, {
+        position: 'fixed',
+        top: '-1000px',
+        left: '-1000px',
+        opacity: '0',
+      });
+      document.body.appendChild(input);
+      input.focus();
+      input.select();
+      var ok = false;
+      try {
+        ok = document.execCommand('copy');
+      } catch {
+        ok = false;
+      }
+      document.body.removeChild(input);
+      return Promise.resolve(ok);
+    } catch {
+      return Promise.resolve(false);
+    }
+  }
+
+  function normalizeSummaryItems(items, context) {
+    var source = resolveValue(items, context, []);
+    var list = [];
+    var index;
+
+    if (Array.isArray(source)) {
+      for (index = 0; index < source.length; index += 1) {
+        if (isPlainObject(source[index])) {
+          if (trimString(source[index].label) && source[index].value !== undefined && source[index].value !== null) {
+            list.push({
+              label: trimString(source[index].label),
+              value: String(source[index].value),
+              emphasis: source[index].emphasis === true,
+            });
+          }
+        }
+      }
+      return list;
+    }
+
+    if (isPlainObject(source)) {
+      var key;
+      for (key in source) {
+        if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined && source[key] !== null) {
+          list.push({
+            label: key,
+            value: String(source[key]),
+            emphasis: false,
+          });
+        }
+      }
+    }
+
+    return list;
+  }
+
+  function buildContext(instance, inputContext) {
+    var source = isPlainObject(inputContext) ? inputContext : {};
+    var pageUrl = toAbsoluteUrl(source.pageUrl) || trimString(global.location && global.location.href) || '';
+    var pageTitle = trimString(source.pageTitle) || trimString(document.title) || 'Share View';
+    var localeValue = source.locale;
+    if (localeValue === undefined) localeValue = source.language;
+    if (localeValue === undefined) localeValue = source.lang;
+    var hasExplicitLocale = localeValue !== undefined && localeValue !== null && trimString(localeValue) !== '';
+
+    var context = {
+      locale: hasExplicitLocale ? resolveLocale(localeValue, false, DEFAULT_LOCALE) : instance._defaultLocale,
+      pageTitle: pageTitle,
+      pageUrl: pageUrl,
+      layout: normalizeLayout(source.layout) || normalizeLayout(source.meta && source.meta.layout),
+      shareTitle: trimString(source.shareTitle),
+      shareSubtitle: trimString(source.shareSubtitle),
+      shareDescription: trimString(source.shareDescription),
+      shareBadge: trimString(source.shareBadge),
+      shareBrand: trimString(source.shareBrand),
+      qrText: trimString(source.qrText),
+      qrPath: trimString(source.qrPath),
+      summaryItems: [],
+      meta: isPlainObject(source.meta) ? source.meta : {},
+      copyText: trimString(source.copyText),
+      fileName: trimString(source.fileName),
+      imageType: normalizeImageType(source.imageType),
+      imageQuality: typeof source.imageQuality === 'number' ? source.imageQuality : undefined,
+      isWeChat: isWeChatBrowser(),
+    };
+    context.summaryItems = normalizeSummaryItems(
+      source.summaryItems !== undefined ? source.summaryItems : instance.options.summary.items,
+      context
+    );
+    return context;
+  }
+
+  function createQRCodeImage(config, context, instance) {
+    var readiness = instance && typeof instance._ensureQRCodeReady === 'function'
+      ? instance._ensureQRCodeReady(context)
+      : Promise.resolve();
+    var qrBackground = getSanitizedQrLightColor(config.background, '#ffffff');
+    var qrLightColor = getSanitizedQrLightColor(config.colorLight, qrBackground);
+    var fallbackQrText = getQrFallbackText(context);
+
+    function renderQrCodeDataUrl(text) {
+      return new Promise(function (resolve, reject) {
+        ensure(typeof global.QRCode === 'function', 'MISSING_QRCODE', instance ? instance._getText('errorMissingQRCode', context, 'QRCode dependency is missing. Please load qrcodejs first.') : 'QRCode dependency is missing.');
+        ensure(text, 'INVALID_QR_TEXT', instance ? instance._getText('errorInvalidQrText', context, 'QR code content cannot be empty.') : 'QR code content cannot be empty.');
+
+        var mount = createElement('div', 'runtime-share-qrcode-mount');
+        setStyles(mount, {
+          width: config.size + 'px',
+          height: config.size + 'px',
+          background: qrBackground,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        });
+
+        try {
+          new global.QRCode(mount, {
+            text: text,
+            width: config.size,
+            height: config.size,
+            colorDark: config.colorDark,
+            colorLight: qrLightColor,
+            correctLevel: global.QRCode.CorrectLevel ? global.QRCode.CorrectLevel[config.correctLevel] : undefined,
+          });
+        } catch (error) {
+          reject(error);
+          return;
+        }
+
+        setTimeout(function () {
+          var canvas = mount.querySelector('canvas');
+          var image = mount.querySelector('img');
+          if (canvas && typeof canvas.toDataURL === 'function') {
+            resolve(canvas.toDataURL('image/png'));
+            return;
+          }
+          if (image && image.src) {
+            resolve(image.src);
+            return;
+          }
+          reject(new Error(instance ? instance._getText('errorQrRender', context, 'Failed to render QR code.') : 'Failed to render QR code.'));
+        }, 0);
+      });
+    }
+
+    return Promise.resolve(readiness).then(function () {
+      if (!config.enabled) {
+        return null;
+      }
+      var qrText = resolveQrCodeText(config, context) || fallbackQrText;
+      return renderQrCodeDataUrl(qrText).catch(function (error) {
+        if (fallbackQrText && fallbackQrText !== qrText) {
+          return renderQrCodeDataUrl(fallbackQrText);
+        }
+        if (error && error.code === 'INVALID_QR_TEXT' && fallbackQrText) {
+          return renderQrCodeDataUrl(fallbackQrText);
+        }
+        throw error;
+      });
+    });
+  }
+
+  function RuntimeShare(options) {
+    var opts = isPlainObject(options) ? options : {};
+    var initialLocale = opts.locale;
+    if (initialLocale === undefined) initialLocale = opts.language;
+    if (initialLocale === undefined) initialLocale = opts.lang;
+    this._defaultLocale = resolveLocale(initialLocale, true, DEFAULT_LOCALE);
+    this.options = {
+      locale: this._defaultLocale,
+      text: mergeSection({}, opts.text),
+      messages: mergeNestedSections(LOCALE_MESSAGES, opts.messages),
+      dependencies: mergeNestedSections({
+        autoLoad: true,
+        qrcodejs: DEFAULT_DEPENDENCY_URLS.qrcodejs,
+        html2canvasPro: DEFAULT_DEPENDENCY_URLS.html2canvasPro,
+      }, opts.dependencies),
+      modal: mergeSection({
+        zIndex: 2147483000,
+        backdrop: 'rgba(2, 6, 23, 0.78)',
+        panelBackground: 'rgba(15, 23, 42, 0.96)',
+        panelBorder: '1px solid rgba(148, 163, 184, 0.18)',
+        panelShadow: '0 30px 80px rgba(15, 23, 42, 0.45)',
+        panelRadius: '28px',
+        panelMaxWidth: '960px',
+        previewMaxWidth: '460px',
+        previewMaxHeight: '72vh',
+        portraitPreviewMaxWidth: '380px',
+        portraitPreviewMaxHeight: '78vh',
+      }, opts.modal),
+      capture: mergeSection({
+        imageType: 'image/jpeg',
+        imageQuality: 0.92,
+      }, opts.capture),
+      card: mergeSection({
+        width: 1080,
+        portraitWidth: 840,
+        compactWidth: 760,
+        autoCompact: true,
+        padding: 48,
+        portraitPadding: 36,
+        radius: 36,
+        portraitRadius: 34,
+        background: '',
+        textColor: '#f8fafc',
+        mutedTextColor: 'rgba(248, 250, 252, 0.72)',
+        accentColor: '#7dd3fc',
+        surfaceColor: 'rgba(15, 23, 42, 0.42)',
+        borderColor: 'rgba(148, 163, 184, 0.26)',
+        renderScale: function () {
+          return Math.max(2, Math.min(global.devicePixelRatio || 1, 3));
+        },
+        renderMaxPixels: 5200000,
+        showLink: false,
+        renderExtra: null,
+      }, opts.card),
+      qr: mergeSection({
+        enabled: true,
+        text: function (context) {
+          return context.pageUrl;
+        },
+        path: '',
+        size: 184,
+        background: '#ffffff',
+        colorDark: '#0f172a',
+        colorLight: '#ffffff',
+        correctLevel: 'H',
+        title: '',
+        caption: '',
+      }, opts.qr),
+      summary: mergeSection({
+        items: [],
+      }, opts.summary),
+      actions: mergeSection({
+        allowDownload: true,
+        allowCopyLink: true,
+        allowRegenerate: true,
+        hideDownloadInWeChat: true,
+      }, opts.actions),
+      styles: mergeNestedSections({
+        overlay: {},
+        panel: {},
+        header: {},
+        title: {},
+        closeButton: {},
+        body: {},
+        footer: {},
+        hint: {},
+        actionWrap: {},
+        actionButton: {},
+        loading: {},
+        error: {},
+        resultWrap: {},
+        previewWrap: {},
+        previewImage: {},
+        card: {},
+        cardTop: {},
+        cardTitleWrap: {},
+        cardHero: {},
+        cardEyebrow: {},
+        cardBadge: {},
+        cardTitle: {},
+        cardSubtitle: {},
+        cardDescription: {},
+        cardBrand: {},
+        cardBottom: {},
+        summary: {},
+        summaryTitle: {},
+        summaryGrid: {},
+        summaryItem: {},
+        summaryLabel: {},
+        summaryValue: {},
+        summaryEmpty: {},
+        linkBlock: {},
+        linkLabel: {},
+        linkValue: {},
+        qrPanel: {},
+        qrTitle: {},
+        qrFrame: {},
+        qrImage: {},
+        qrCaption: {},
+      }, opts.styles),
+      classNames: mergeSection({
+        overlay: '',
+        panel: '',
+        header: '',
+        title: '',
+        closeButton: '',
+        body: '',
+        footer: '',
+        hint: '',
+        actionWrap: '',
+        actionButton: '',
+        loading: '',
+        error: '',
+        resultWrap: '',
+        previewWrap: '',
+        previewImage: '',
+        card: '',
+        cardTop: '',
+        cardTitleWrap: '',
+        cardHero: '',
+        cardEyebrow: '',
+        cardBadge: '',
+        cardTitle: '',
+        cardSubtitle: '',
+        cardDescription: '',
+        cardBrand: '',
+        cardBottom: '',
+        summary: '',
+        summaryTitle: '',
+        summaryGrid: '',
+        summaryItem: '',
+        summaryLabel: '',
+        summaryValue: '',
+        summaryEmpty: '',
+        linkBlock: '',
+        linkLabel: '',
+        linkValue: '',
+        qrPanel: '',
+        qrTitle: '',
+        qrFrame: '',
+        qrImage: '',
+        qrCaption: '',
+      }, opts.classNames),
+      renderers: mergeSection({
+        loading: null,
+        error: null,
+        result: null,
+        card: null,
+        summaryItem: null,
+        summaryEmpty: null,
+        qrPanel: null,
+      }, opts.renderers),
+      onError: typeof opts.onError === 'function' ? opts.onError : null,
+      beforeOpen: typeof opts.beforeOpen === 'function' ? opts.beforeOpen : null,
+      afterOpen: typeof opts.afterOpen === 'function' ? opts.afterOpen : null,
+    };
+    this._context = null;
+    this._imageDataUrl = '';
+    this._isOpen = false;
+    this._lastActiveElement = null;
+    this._previousBodyOverflow = '';
+    this._qrcodeReadyPromise = null;
+    this._html2canvasReadyPromise = null;
+    this._dependencyWarmupPromise = null;
+    RuntimeShare._defaultInstance = this;
+    this._ensureStructure();
+    this._startDependencyWarmup();
+  }
+
+  RuntimeShare.prototype._getRenderHelpers = function () {
+    var self = this;
+    return {
+      createElement: createElement,
+      appendChildren: appendChildren,
+      setStyles: setStyles,
+      appendClassName: appendClassName,
+      resolveValue: resolveValue,
+      resolveElement: resolveElement,
+      toAbsoluteUrl: toAbsoluteUrl,
+      createQRCodeImage: function (contextOverride) {
+        return createQRCodeImage(self.options.qr || {}, contextOverride || self._context || {}, self);
+      },
+      createPosterRoot: function (contextOverride, options) {
+        return self._createPosterRoot(contextOverride || self._context || { locale: self._defaultLocale }, options);
+      },
+      cloneNodeForShare: function (target, options, contextOverride) {
+        var baseContext = contextOverride || self._context || { locale: self._defaultLocale };
+        var resolvedTarget = resolveElement(resolveValue(target, baseContext, null));
+        return cloneNodeForShare(resolvedTarget, options);
+      },
+      captureElement: function () {
+        return Promise.resolve('');
+      },
+      applyStyle: function (element, key, defaults) {
+        return self._applyElementStyle(element, key, defaults);
+      },
+      applyClassName: function (element, key) {
+        return self._applyElementClass(element, key);
+      },
+    };
+  };
+
+  RuntimeShare.prototype._getLocaleTable = function (locale) {
+    var normalized = normalizeLocale(locale) || this._defaultLocale || DEFAULT_LOCALE;
+    return this.options.messages[normalized] || this.options.messages[DEFAULT_LOCALE] || {};
+  };
+
+  RuntimeShare.prototype._getText = function (key, context, fallback) {
+    var locale = context && context.locale ? context.locale : this._defaultLocale;
+    var table = this._getLocaleTable(locale);
+    var value = this.options.text[key];
+    if (value === undefined) {
+      value = table[key];
+    }
+    if (value === undefined && locale !== DEFAULT_LOCALE) {
+      value = this._getLocaleTable(DEFAULT_LOCALE)[key];
+    }
+    return resolveValue(value, context || { locale: locale }, fallback);
+  };
+
+  RuntimeShare.prototype._createPosterRoot = function (context, options) {
+    var cardOptions = this.options.card || {};
+    var rootOptions = isPlainObject(options) ? options : {};
+    var layout = getContextLayout(context);
+    var usePortraitLayout = layout === 'portrait';
+    var width = rootOptions.width !== undefined
+      ? rootOptions.width
+      : (usePortraitLayout ? Math.min(cardOptions.width, cardOptions.portraitWidth || 840) : cardOptions.width);
+    var padding = rootOptions.padding !== undefined
+      ? rootOptions.padding
+      : (usePortraitLayout ? Math.min(cardOptions.padding, cardOptions.portraitPadding || 36) : cardOptions.padding);
+    var radius = rootOptions.radius !== undefined
+      ? rootOptions.radius
+      : (usePortraitLayout ? Math.min(cardOptions.radius, cardOptions.portraitRadius || 34) : cardOptions.radius);
+    var background = rootOptions.background !== undefined
+      ? rootOptions.background
+      : (cardOptions.background || 'linear-gradient(180deg, #081121 0%, #0f172a 100%)');
+    var textColor = rootOptions.textColor !== undefined ? rootOptions.textColor : cardOptions.textColor;
+    var borderColor = rootOptions.borderColor !== undefined ? rootOptions.borderColor : cardOptions.borderColor;
+    var resolvedWidth = usePortraitLayout
+      ? clampPortraitPosterWidth(width, '100%')
+      : toCssLength(width, '100%');
+    var root = createElement(trimString(rootOptions.tagName) || 'section', trimString(rootOptions.className));
+    root.setAttribute('data-runtime-share-layout', layout || 'landscape');
+    setStyles(root, mergeSection({
+      width: resolvedWidth,
+      padding: toCssLength(padding, '0px'),
+      borderRadius: toCssLength(radius, '0px'),
+      background: background,
+      color: textColor,
+      boxSizing: 'border-box',
+      fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      position: 'relative',
+      overflow: 'hidden',
+      border: rootOptions.border !== undefined ? rootOptions.border : ('1px solid ' + borderColor),
+      boxShadow: rootOptions.boxShadow !== undefined ? rootOptions.boxShadow : '0 26px 80px rgba(15, 23, 42, 0.28)',
+    }, isPlainObject(rootOptions.styles) ? rootOptions.styles : {}));
+    return root;
+  };
+
+  RuntimeShare.prototype._applyPreviewImageLayout = function (image, previewWrap, context, width, height) {
+    var modalOptions = this.options.modal || {};
+    var layout = getContextLayout(context) || inferLayoutFromDimensions(width, height) || 'landscape';
+    var isPortrait = layout === 'portrait';
+    var previewMaxWidth = isPortrait
+      ? (modalOptions.portraitPreviewMaxWidth || modalOptions.previewMaxWidth)
+      : modalOptions.previewMaxWidth;
+    var previewMaxHeight = isPortrait
+      ? (modalOptions.portraitPreviewMaxHeight || modalOptions.previewMaxHeight || '78vh')
+      : (modalOptions.previewMaxHeight || '72vh');
+    var previewWidthConstraint = isPortrait
+      ? toResponsivePreviewMaxLength(previewMaxWidth, '100%', getPortraitPreviewPreferredWidth())
+      : toContainedMaxLength(previewMaxWidth, '100%');
+    var previewMaxHeightPx = toViewportPixelValue(previewMaxHeight, global.innerHeight || 0);
+    var bodyAvailableHeight = this._bodyNode && this._bodyNode.clientHeight
+      ? this._bodyNode.clientHeight - Math.max(0, toPixelValue(getPreviewWrapPadding(isPortrait)) * 2)
+      : 0;
+    if (bodyAvailableHeight > 0) {
+      previewMaxHeightPx = previewMaxHeightPx > 0
+        ? Math.min(previewMaxHeightPx, bodyAvailableHeight)
+        : bodyAvailableHeight;
+    }
+    setStyles(previewWrap, {
+      padding: getPreviewWrapPadding(isPortrait),
+      width: 'fit-content',
+      maxWidth: '100%',
+      minWidth: '0',
+      boxSizing: 'border-box',
+      overflow: 'hidden',
+      marginLeft: 'auto',
+      marginRight: 'auto',
+    });
+    setStyles(image, {
+      width: 'auto',
+      maxWidth: previewWidthConstraint,
+      maxHeight: previewMaxHeightPx > 0 ? previewMaxHeightPx + 'px' : previewMaxHeight,
+    });
+    image.setAttribute('data-runtime-share-layout', layout);
+  };
+
+  RuntimeShare.prototype._applyElementStyle = function (element, key, defaults) {
+    return setStyles(element, mergeSection(defaults || {}, this.options.styles[key] || {}));
+  };
+
+  RuntimeShare.prototype._applyElementClass = function (element, key) {
+    return appendClassName(element, this.options.classNames[key] || '');
+  };
+
+  RuntimeShare.prototype._refreshActionLabels = function (context) {
+    var localeContext = context || { locale: this._defaultLocale, pageTitle: trimString(document.title) || 'Share View' };
+    if (this._closeButton) this._closeButton.textContent = this._getText('close', localeContext, 'Close');
+    if (this._downloadButton) this._downloadButton.textContent = this._getText('download', localeContext, 'Download');
+    if (this._copyButton) this._copyButton.textContent = this._getText('copyLink', localeContext, 'Copy Link');
+    if (this._regenerateButton) this._regenerateButton.textContent = this._getText('regenerate', localeContext, 'Regenerate');
+  };
+
+  RuntimeShare.prototype._getPanelTitle = function (context) {
+    return trimString(this._getText('panelTitle', context || { locale: this._defaultLocale }, 'Share'));
+  };
+
+  RuntimeShare.prototype._getCardTitle = function (context) {
+    return trimString(context && context.shareTitle) || trimString(this._getText('title', context, context && context.pageTitle ? context.pageTitle : 'Share Current View'));
+  };
+
+  RuntimeShare.prototype._getCardSubtitle = function (context) {
+    return trimString(context && context.shareSubtitle) || trimString(this._getText('subtitle', context, ''));
+  };
+
+  RuntimeShare.prototype._getCardBadge = function (context) {
+    return trimString(context && context.shareBadge) || trimString(this._getText('badge', context, ''));
+  };
+
+  RuntimeShare.prototype._getShareDescription = function (context) {
+    return trimString(context && context.shareDescription) || trimString(this._getText('description', context, ''));
+  };
+
+  RuntimeShare.prototype._buildCopyText = function (context) {
+    var localeContext = context || this._context || { locale: this._defaultLocale };
+    var explicit = trimString(localeContext.copyText);
+    var url = trimString(localeContext.pageUrl) || trimString(global.location && global.location.href);
+    if (explicit) {
+      if (url && !containsUrl(explicit)) {
+        return explicit + '\n' + url;
+      }
+      return explicit;
+    }
+    var title = this._getCardTitle(localeContext);
+    var description = this._getShareDescription(localeContext) || this._getCardSubtitle(localeContext);
+    var parts = [];
+    if (title && description) {
+      parts.push((localeContext.locale || DEFAULT_LOCALE) === 'zh-CN' ? ('「' + title + '」—— ' + description) : (title + ' - ' + description));
+    } else if (title) {
+      parts.push(title);
+    } else if (description) {
+      parts.push(description);
+    }
+    if (url) {
+      parts.push(url);
+    }
+    return parts.join('\n');
+  };
+
+  RuntimeShare.prototype._getDependencyUrl = function (key, context) {
+    var deps = this.options.dependencies || {};
+    var locale = context && context.locale ? context.locale : this._defaultLocale;
+    if (key === 'qrcodejs') {
+      return resolveLocalizedUrlMap(deps.qrcodejs, locale, DEFAULT_DEPENDENCY_URLS.qrcodejs);
+    }
+    if (key === 'html2canvasPro') {
+      return resolveLocalizedUrlMap(deps.html2canvasPro, locale, DEFAULT_DEPENDENCY_URLS.html2canvasPro);
+    }
+    return '';
+  };
+
+  RuntimeShare.prototype._getDependencyContext = function (context) {
+    if (context && typeof context === 'object') {
+      return context;
+    }
+    return {
+      locale: this._defaultLocale,
+      pageTitle: trimString(document.title) || 'Share View',
+      pageUrl: trimString(global.location && global.location.href) || '',
+    };
+  };
+
+  RuntimeShare.prototype._startDependencyWarmup = function (context) {
+    var deps = this.options.dependencies || {};
+    if (deps.autoLoad === false) {
+      return Promise.resolve([]);
+    }
+    if (this._dependencyWarmupPromise) {
+      return this._dependencyWarmupPromise;
+    }
+
+    this._dependencyWarmupPromise = this._ensureRuntimeDependencies(this._getDependencyContext(context)).catch(function (error) {
+      this._dependencyWarmupPromise = null;
+      this._reportSoftError('DEPENDENCY_PRELOAD_FAILED', error && error.message ? error.message : 'Dependency preload failed.', error);
+      return [];
+    }.bind(this));
+    return this._dependencyWarmupPromise;
+  };
+
+  RuntimeShare.prototype._ensureQRCodeReady = async function (context) {
+    if (typeof global.QRCode === 'function') {
+      return global.QRCode;
+    }
+
+    if (this._qrcodeReadyPromise) {
+      return this._qrcodeReadyPromise;
+    }
+
+    var deps = this.options.dependencies || {};
+    ensure(deps.autoLoad !== false, 'MISSING_QRCODE', this._getText('errorMissingQRCode', context, 'QRCode dependency is missing. Please load qrcodejs first.'));
+
+    var url = this._getDependencyUrl('qrcodejs', context);
+    this._qrcodeReadyPromise = loadExternalScript(url).then(function () {
+      ensure(typeof global.QRCode === 'function', 'MISSING_QRCODE', this._getText('errorMissingQRCode', context, 'QRCode dependency is missing. Please load qrcodejs first.'));
+      return global.QRCode;
+    }.bind(this)).catch(function (error) {
+      this._qrcodeReadyPromise = null;
+      throw error;
+    }.bind(this));
+    return this._qrcodeReadyPromise;
+  };
+
+  RuntimeShare.prototype._ensureHtml2canvasReady = async function (context) {
+    if (typeof global.html2canvas === 'function') {
+      return global.html2canvas;
+    }
+
+    if (this._html2canvasReadyPromise) {
+      return this._html2canvasReadyPromise;
+    }
+
+    var deps = this.options.dependencies || {};
+    ensure(deps.autoLoad !== false, 'MISSING_HTML2CANVAS', this._getText('errorMissingHtml2canvas', context, 'html2canvas dependency is missing. Please load html2canvas-pro first.'));
+
+    var url = this._getDependencyUrl('html2canvasPro', context);
+    this._html2canvasReadyPromise = loadExternalScript(url).then(function () {
+      ensure(typeof global.html2canvas === 'function', 'MISSING_HTML2CANVAS', this._getText('errorMissingHtml2canvas', context, 'html2canvas dependency is missing. Please load html2canvas-pro first.'));
+      return global.html2canvas;
+    }.bind(this)).catch(function (error) {
+      this._html2canvasReadyPromise = null;
+      throw error;
+    }.bind(this));
+    return this._html2canvasReadyPromise;
+  };
+
+  RuntimeShare.prototype._ensureRuntimeDependencies = function (context) {
+    var tasks = [this._ensureHtml2canvasReady(context)];
+    if ((this.options.qr || {}).enabled !== false) {
+      tasks.push(this._ensureQRCodeReady(context));
+    }
+    return Promise.all(tasks);
+  };
+
+  RuntimeShare.prototype._reportSoftError = function (code, message, cause) {
+    if (typeof this.options.onError !== 'function') {
+      return;
+    }
+    try {
+      var error = new Error(message);
+      error.name = 'RuntimeShareSoftError';
+      error.code = code;
+      error.cause = cause || null;
+      error.isSoftError = true;
+      this.options.onError(error, this._context || null);
+    } catch {}
+  };
+
+  RuntimeShare.prototype._runHook = function (hookName, args) {
+    var handler = this.options[hookName];
+    if (typeof handler !== 'function') {
+      return Promise.resolve();
+    }
+    try {
+      return Promise.resolve(handler.apply(null, args || [])).catch(function (error) {
+        this._reportSoftError('HOOK_' + hookName.toUpperCase() + '_FAILED', this._getText('softHookFailed', { locale: (this._context && this._context.locale) || this._defaultLocale, name: hookName }, hookName + ' failed and was ignored.'), error);
+      }.bind(this));
+    } catch (error) {
+      this._reportSoftError('HOOK_' + hookName.toUpperCase() + '_FAILED', this._getText('softHookFailed', { locale: (this._context && this._context.locale) || this._defaultLocale, name: hookName }, hookName + ' failed and was ignored.'), error);
+      return Promise.resolve();
+    }
+  };
+
+  RuntimeShare.prototype._runRenderer = function (rendererName, args) {
+    var renderers = this.options.renderers || {};
+    var renderer = renderers[rendererName];
+    if (typeof renderer !== 'function') {
+      return Promise.resolve(null);
+    }
+    try {
+      return Promise.resolve(renderer.apply(null, args || [])).catch(function (error) {
+        this._reportSoftError('RENDERER_' + rendererName.toUpperCase() + '_FAILED', this._getText('softRendererFailed', { locale: (this._context && this._context.locale) || this._defaultLocale, name: rendererName }, rendererName + ' failed and fell back to the default implementation.'), error);
+        return null;
+      }.bind(this));
+    } catch (error) {
+      this._reportSoftError('RENDERER_' + rendererName.toUpperCase() + '_FAILED', this._getText('softRendererFailed', { locale: (this._context && this._context.locale) || this._defaultLocale, name: rendererName }, rendererName + ' failed and fell back to the default implementation.'), error);
+      return Promise.resolve(null);
+    }
+  };
+
+  RuntimeShare.prototype._ensureStructure = function () {
+    if (this._overlay) {
+      return;
+    }
+
+    var overlay = createElement('div', 'runtime-share-overlay');
+    this._applyElementClass(overlay, 'overlay');
+    overlay.setAttribute('data-runtime-share-ignore', 'true');
+    overlay.setAttribute('aria-hidden', 'true');
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    this._applyElementStyle(overlay, 'overlay', {
+      position: 'fixed',
+      top: '0',
+      right: '0',
+      bottom: '0',
+      left: '0',
+      zIndex: String(this.options.modal.zIndex),
+      display: 'none',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: getModalEdgePadding(),
+      background: this.options.modal.backdrop,
+      backdropFilter: 'blur(10px)',
+    });
+
+    var panel = createElement('div', 'runtime-share-panel');
+    this._applyElementClass(panel, 'panel');
+    this._applyElementStyle(panel, 'panel', {
+      width: '100%',
+      maxWidth: this.options.modal.panelMaxWidth,
+      maxHeight: '92vh',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'stretch',
+      overflow: 'hidden',
+      background: this.options.modal.panelBackground,
+      color: '#f8fafc',
+      border: this.options.modal.panelBorder,
+      borderRadius: this.options.modal.panelRadius,
+      boxShadow: this.options.modal.panelShadow,
+      backdropFilter: 'blur(18px)',
+    });
+
+    var header = createElement('div', 'runtime-share-header');
+    this._applyElementClass(header, 'header');
+    this._applyElementStyle(header, 'header', {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '12px',
+      padding: getModalHeaderPadding(),
+      borderBottom: '1px solid rgba(148, 163, 184, 0.12)',
+    });
+
+    this._titleNode = createElement('div', 'runtime-share-panel-title', this._getPanelTitle({ locale: this._defaultLocale, pageTitle: trimString(document.title) || 'Share View' }));
+    this._applyElementClass(this._titleNode, 'title');
+    this._applyElementStyle(this._titleNode, 'title', {
+      fontSize: '24px',
+      fontWeight: '800',
+      lineHeight: '1.3',
+      letterSpacing: '-0.02em',
+    });
+
+    this._closeButton = createElement('button', 'runtime-share-close', this._getText('close', { locale: this._defaultLocale }, 'Close'));
+    this._closeButton.type = 'button';
+    this._applyElementClass(this._closeButton, 'closeButton');
+    this._applyElementStyle(this._closeButton, 'closeButton', {
+      appearance: 'none',
+      border: '1px solid rgba(148, 163, 184, 0.14)',
+      background: 'rgba(15, 23, 42, 0.52)',
+      color: '#94a3b8',
+      borderRadius: '16px',
+      padding: '10px 14px',
+      cursor: 'pointer',
+      fontSize: '18px',
+      lineHeight: '1',
+    });
+    this._closeButton.addEventListener('click', this.close.bind(this));
+
+    appendChildren(header, [this._titleNode, this._closeButton]);
+
+    this._bodyNode = createElement('div', 'runtime-share-body');
+    this._applyElementClass(this._bodyNode, 'body');
+    this._applyElementStyle(this._bodyNode, 'body', {
+      padding: getModalBodyPadding(),
+      flex: '1 1 auto',
+      minHeight: '0',
+      overflowX: 'hidden',
+      overflowY: 'auto',
+      WebkitOverflowScrolling: 'touch',
+    });
+
+    var footer = createElement('div', 'runtime-share-footer');
+    this._applyElementClass(footer, 'footer');
+    this._applyElementStyle(footer, 'footer', {
+      display: 'grid',
+      flex: 'none',
+      gap: '14px',
+      padding: getModalFooterPadding(),
+    });
+
+    this._hintNode = createElement('div', 'runtime-share-hint', '');
+    this._applyElementClass(this._hintNode, 'hint');
+    this._applyElementStyle(this._hintNode, 'hint', {
+      color: 'rgba(226, 232, 240, 0.78)',
+      fontSize: '14px',
+      lineHeight: '1.6',
+      minHeight: '22px',
+    });
+
+    var actionWrap = createElement('div', 'runtime-share-actions');
+    this._applyElementClass(actionWrap, 'actionWrap');
+    this._applyElementStyle(actionWrap, 'actionWrap', {
+      display: 'grid',
+      gridTemplateColumns: 'minmax(0, 1fr)',
+      gap: '12px',
+    });
+
+    this._downloadButton = this._createActionButton(this._getText('download', { locale: this._defaultLocale }, 'Download'));
+    this._downloadButton.addEventListener('click', this.download.bind(this));
+    setStyles(this._downloadButton, {
+      background: 'linear-gradient(135deg, #f6df91 0%, #d9bb67 100%)',
+      border: '1px solid rgba(255, 236, 177, 0.7)',
+      color: '#111827',
+      boxShadow: '0 16px 40px rgba(217, 187, 103, 0.24)',
+    });
+
+    this._copyButton = this._createActionButton(this._getText('copyLink', { locale: this._defaultLocale }, 'Copy Link'));
+    this._copyButton.addEventListener('click', this.copyLink.bind(this));
+    setStyles(this._copyButton, {
+      background: 'rgba(15, 23, 42, 0.88)',
+      border: '1px solid rgba(217, 187, 103, 0.34)',
+      color: '#f6df91',
+      boxShadow: '0 16px 34px rgba(2, 6, 23, 0.18)',
+    });
+
+    this._regenerateButton = this._createActionButton(this._getText('regenerate', { locale: this._defaultLocale }, 'Regenerate'));
+    this._regenerateButton.addEventListener('click', this.regenerate.bind(this));
+    setStyles(this._regenerateButton, {
+      background: 'rgba(15, 23, 42, 0.58)',
+      border: '1px solid rgba(148, 163, 184, 0.16)',
+      color: '#cbd5e1',
+    });
+
+    appendChildren(actionWrap, [this._downloadButton, this._copyButton, this._regenerateButton]);
+    appendChildren(footer, [this._hintNode, actionWrap]);
+    appendChildren(panel, [header, this._bodyNode, footer]);
+    overlay.appendChild(panel);
+    (document.body || document.documentElement).appendChild(overlay);
+
+    var stage = createElement('div', 'runtime-share-stage');
+    stage.setAttribute('data-runtime-share-ignore', 'true');
+    setStyles(stage, {
+      position: 'fixed',
+      top: '0',
+      left: '-20000px',
+      width: '1px',
+      height: '1px',
+      overflow: 'visible',
+      pointerEvents: 'none',
+      opacity: '1',
+      zIndex: '-1',
+    });
+    (document.body || document.documentElement).appendChild(stage);
+
+    this._overlay = overlay;
+    this._panelNode = panel;
+    this._headerNode = header;
+    this._footerNode = footer;
+    this._actionWrapNode = actionWrap;
+    this._stage = stage;
+
+    this._onOverlayClick = this._handleOverlayClick.bind(this);
+    this._onKeyDown = this._handleKeyDown.bind(this);
+    overlay.addEventListener('click', this._onOverlayClick);
+  };
+
+  RuntimeShare.prototype._syncStructureStyles = function () {
+    if (!this._overlay || !this._panelNode) {
+      return;
+    }
+
+    this._applyElementStyle(this._overlay, 'overlay', {
+      position: 'fixed',
+      top: '0',
+      right: '0',
+      bottom: '0',
+      left: '0',
+      zIndex: String(this.options.modal.zIndex),
+      display: this._isOpen ? 'flex' : 'none',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: getModalEdgePadding(),
+      background: this.options.modal.backdrop,
+      backdropFilter: 'blur(10px)',
+    });
+    this._applyElementStyle(this._panelNode, 'panel', {
+      width: '100%',
+      maxWidth: this.options.modal.panelMaxWidth,
+      maxHeight: '92vh',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'stretch',
+      overflow: 'hidden',
+      background: this.options.modal.panelBackground,
+      color: '#f8fafc',
+      border: this.options.modal.panelBorder,
+      borderRadius: this.options.modal.panelRadius,
+      boxShadow: this.options.modal.panelShadow,
+      backdropFilter: 'blur(18px)',
+    });
+    if (this._headerNode) {
+      this._applyElementStyle(this._headerNode, 'header', {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '12px',
+        padding: getModalHeaderPadding(),
+        borderBottom: '1px solid rgba(148, 163, 184, 0.12)',
+      });
+    }
+    if (this._titleNode) {
+      this._applyElementStyle(this._titleNode, 'title', {
+        fontSize: '24px',
+        fontWeight: '800',
+        lineHeight: '1.3',
+        letterSpacing: '-0.02em',
+      });
+    }
+    if (this._closeButton) {
+      this._applyElementStyle(this._closeButton, 'closeButton', {
+        appearance: 'none',
+        border: '1px solid rgba(148, 163, 184, 0.14)',
+        background: 'rgba(15, 23, 42, 0.52)',
+        color: '#94a3b8',
+        borderRadius: '16px',
+        padding: '10px 14px',
+        cursor: 'pointer',
+        fontSize: '18px',
+        lineHeight: '1',
+      });
+    }
+    if (this._bodyNode) {
+      this._applyElementStyle(this._bodyNode, 'body', {
+        padding: getModalBodyPadding(),
+        flex: '1 1 auto',
+        minHeight: '0',
+        overflowX: 'hidden',
+        overflowY: 'auto',
+        WebkitOverflowScrolling: 'touch',
+      });
+    }
+    if (this._footerNode) {
+      this._applyElementStyle(this._footerNode, 'footer', {
+        display: 'grid',
+        flex: 'none',
+        gap: '14px',
+        padding: getModalFooterPadding(),
+      });
+    }
+    if (this._hintNode) {
+      this._applyElementStyle(this._hintNode, 'hint', {
+        color: 'rgba(226, 232, 240, 0.78)',
+        fontSize: '14px',
+        lineHeight: '1.6',
+        minHeight: '22px',
+      });
+    }
+    if (this._actionWrapNode) {
+      this._applyElementStyle(this._actionWrapNode, 'actionWrap', {
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr)',
+        gap: '12px',
+      });
+    }
+    if (this._downloadButton) {
+      this._applyElementStyle(this._downloadButton, 'actionButton', {
+        appearance: 'none',
+        border: '1px solid rgba(148, 163, 184, 0.24)',
+        background: 'rgba(30, 41, 59, 0.82)',
+        color: '#f8fafc',
+        borderRadius: '20px',
+        padding: '16px 18px',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: '18px',
+        fontWeight: '700',
+        lineHeight: '1.2',
+        width: '100%',
+        justifyContent: 'center',
+        textAlign: 'center',
+      });
+      setStyles(this._downloadButton, {
+        background: 'linear-gradient(135deg, #f6df91 0%, #d9bb67 100%)',
+        border: '1px solid rgba(255, 236, 177, 0.7)',
+        color: '#111827',
+        boxShadow: '0 16px 40px rgba(217, 187, 103, 0.24)',
+      });
+    }
+    if (this._copyButton) {
+      this._applyElementStyle(this._copyButton, 'actionButton', {
+        appearance: 'none',
+        border: '1px solid rgba(148, 163, 184, 0.24)',
+        background: 'rgba(30, 41, 59, 0.82)',
+        color: '#f8fafc',
+        borderRadius: '20px',
+        padding: '16px 18px',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: '18px',
+        fontWeight: '700',
+        lineHeight: '1.2',
+        width: '100%',
+        justifyContent: 'center',
+        textAlign: 'center',
+      });
+      setStyles(this._copyButton, {
+        background: 'rgba(15, 23, 42, 0.88)',
+        border: '1px solid rgba(217, 187, 103, 0.34)',
+        color: '#f6df91',
+        boxShadow: '0 16px 34px rgba(2, 6, 23, 0.18)',
+      });
+    }
+    if (this._regenerateButton) {
+      this._applyElementStyle(this._regenerateButton, 'actionButton', {
+        appearance: 'none',
+        border: '1px solid rgba(148, 163, 184, 0.24)',
+        background: 'rgba(30, 41, 59, 0.82)',
+        color: '#f8fafc',
+        borderRadius: '20px',
+        padding: '16px 18px',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        fontSize: '18px',
+        fontWeight: '700',
+        lineHeight: '1.2',
+        width: '100%',
+        justifyContent: 'center',
+        textAlign: 'center',
+      });
+      setStyles(this._regenerateButton, {
+        background: 'rgba(15, 23, 42, 0.58)',
+        border: '1px solid rgba(148, 163, 184, 0.16)',
+        color: '#cbd5e1',
+      });
+    }
+  };
+
+  RuntimeShare.prototype._createActionButton = function (label) {
+    var button = createElement('button', 'runtime-share-action', label);
+    button.type = 'button';
+    this._applyElementClass(button, 'actionButton');
+    this._applyElementStyle(button, 'actionButton', {
+      appearance: 'none',
+      border: '1px solid rgba(148, 163, 184, 0.24)',
+      background: 'rgba(30, 41, 59, 0.82)',
+      color: '#f8fafc',
+      borderRadius: '20px',
+      padding: '16px 18px',
+      cursor: 'pointer',
+      display: 'inline-flex',
+      alignItems: 'center',
+      fontSize: '18px',
+      fontWeight: '700',
+      lineHeight: '1.2',
+      width: '100%',
+      justifyContent: 'center',
+      textAlign: 'center',
+    });
+    return button;
+  };
+
+  RuntimeShare.prototype._handleOverlayClick = function (event) {
+    if (event.target === this._overlay) {
+      this.close();
+    }
+  };
+
+  RuntimeShare.prototype._handleKeyDown = function (event) {
+    if (event.key === 'Escape') {
+      this.close();
+    }
+  };
+
+  RuntimeShare.prototype._setOpenState = function (open) {
+    this._isOpen = open === true;
+    this._overlay.style.display = this._isOpen ? 'flex' : 'none';
+    this._overlay.setAttribute('aria-hidden', this._isOpen ? 'false' : 'true');
+
+    if (this._isOpen) {
+      this._lastActiveElement = document.activeElement;
+      this._previousBodyOverflow = document.body.style.overflow || '';
+      document.body.style.overflow = 'hidden';
+      document.addEventListener('keydown', this._onKeyDown);
+    } else {
+      document.body.style.overflow = this._previousBodyOverflow;
+      document.removeEventListener('keydown', this._onKeyDown);
+      if (this._lastActiveElement && typeof this._lastActiveElement.focus === 'function') {
+        try {
+          this._lastActiveElement.focus();
+        } catch {}
+      }
+    }
+  };
+
+  RuntimeShare.prototype._setLoading = function (message) {
+    var context = this._context || { locale: this._defaultLocale, pageTitle: trimString(document.title) || 'Share View' };
+    this._refreshActionLabels(context);
+    this._titleNode.textContent = this._getPanelTitle(context) || this._getText('loading', context, 'Generating share image...');
+    this._hintNode.textContent = '';
+    this._bodyNode.innerHTML = '';
+
+    var helpers = this._getRenderHelpers();
+    try {
+      if (typeof this.options.renderers.loading === 'function') {
+        var customLoading = this.options.renderers.loading(message || this._getText('loading', context, 'Generating share image...'), context, helpers);
+        if (customLoading && customLoading.nodeType === 1) {
+          this._downloadButton.style.display = 'none';
+          this._copyButton.style.display = 'none';
+          this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+          this._bodyNode.appendChild(customLoading);
+          return;
+        }
+      }
+    } catch (error) {
+      this._reportSoftError('RENDERER_LOADING_FAILED', this._getText('softRendererFailed', { locale: context.locale, name: 'loading' }, 'loading failed and fell back to the default implementation.'), error);
+    }
+
+    var loading = createElement('div', 'runtime-share-loading', message || this._getText('loading', context, 'Generating share image...'));
+    this._applyElementClass(loading, 'loading');
+    this._applyElementStyle(loading, 'loading', {
+      minHeight: '320px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      textAlign: 'center',
+      fontSize: '16px',
+      color: '#e2e8f0',
+      padding: '32px',
+      borderRadius: '24px',
+      background: 'rgba(15, 23, 42, 0.4)',
+      border: '1px dashed rgba(148, 163, 184, 0.22)',
+    });
+
+    this._downloadButton.style.display = 'none';
+    this._copyButton.style.display = 'none';
+    this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+    this._bodyNode.appendChild(loading);
+  };
+
+  RuntimeShare.prototype._showError = function (error) {
+    var context = this._context || { locale: this._defaultLocale, pageTitle: trimString(document.title) || 'Share View' };
+    this._refreshActionLabels(context);
+    this._titleNode.textContent = this._getText('errorTitle', context, 'Share Image Failed');
+    this._hintNode.textContent = error && error.message ? error.message : this._getText('unknownError', context, 'Unknown error');
+    this._bodyNode.innerHTML = '';
+
+    var helpers = this._getRenderHelpers();
+    try {
+      if (typeof this.options.renderers.error === 'function') {
+        var customError = this.options.renderers.error(error, context, helpers);
+        if (customError && customError.nodeType === 1) {
+          this._downloadButton.style.display = 'none';
+          this._copyButton.style.display = 'none';
+          this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+          this._regenerateButton.textContent = this._getText('errorRetry', context, 'Try Again');
+          this._bodyNode.appendChild(customError);
+          return;
+        }
+      }
+    } catch (rendererError) {
+      this._reportSoftError('RENDERER_ERROR_FAILED', this._getText('softRendererFailed', { locale: context.locale, name: 'error' }, 'error failed and fell back to the default implementation.'), rendererError);
+    }
+
+    var message = createElement('div', 'runtime-share-error');
+    this._applyElementClass(message, 'error');
+    this._applyElementStyle(message, 'error', {
+      minHeight: '240px',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      textAlign: 'center',
+      fontSize: '15px',
+      color: '#fee2e2',
+      padding: '24px',
+      borderRadius: '24px',
+      background: 'rgba(127, 29, 29, 0.26)',
+      border: '1px solid rgba(248, 113, 113, 0.25)',
+    });
+    message.textContent = error && error.message ? error.message : this._getText('genericShareError', context, 'Failed to generate share image.');
+
+    this._downloadButton.style.display = 'none';
+    this._copyButton.style.display = 'none';
+    this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+    this._regenerateButton.textContent = this._getText('errorRetry', context, 'Try Again');
+    this._bodyNode.appendChild(message);
+  };
+
+  RuntimeShare.prototype._showResult = function (imageDataUrl, context) {
+    this._refreshActionLabels(context);
+    var hint = context.isWeChat
+      ? this._getText('saveHintWeChat', context, 'WeChat built-in browser usually cannot download files directly. Please long-press the image to save it.')
+      : (isDesktopPointer()
+        ? this._getText('saveHintDesktop', context, 'Right-click the image to save it on desktop browsers.')
+        : this._getText('saveHintMobile', context, 'Long-press the image to save it on mobile browsers.'));
+    var helpers = this._getRenderHelpers();
+    var shouldShowDownload = this.options.actions.allowDownload ? !(context.isWeChat && this.options.actions.hideDownloadInWeChat !== false) : false;
+
+    try {
+      if (typeof this.options.renderers.result === 'function') {
+        var customResult = this.options.renderers.result(imageDataUrl, context, helpers);
+        if (customResult && customResult.nodeType === 1) {
+          this._titleNode.textContent = this._getPanelTitle(context) || 'Share';
+          this._hintNode.textContent = hint;
+          this._bodyNode.innerHTML = '';
+          this._bodyNode.appendChild(customResult);
+          this._downloadButton.style.display = shouldShowDownload ? 'inline-flex' : 'none';
+          this._copyButton.style.display = this.options.actions.allowCopyLink ? 'inline-flex' : 'none';
+          this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+          this._regenerateButton.textContent = this._getText('regenerate', context, 'Regenerate');
+          this._imageDataUrl = imageDataUrl;
+          return;
+        }
+      }
+    } catch (rendererError) {
+      this._reportSoftError('RENDERER_RESULT_FAILED', this._getText('softRendererFailed', { locale: context.locale, name: 'result' }, 'result failed and fell back to the default implementation.'), rendererError);
+    }
+
+    var panelWrap = createElement('div', 'runtime-share-result-wrap');
+    this._applyElementClass(panelWrap, 'resultWrap');
+    this._applyElementStyle(panelWrap, 'resultWrap', {
+      display: 'grid',
+      width: '100%',
+      maxWidth: '100%',
+      minWidth: '0',
+      gridTemplateColumns: 'minmax(0, 1fr)',
+      justifyItems: 'center',
+      gap: '18px',
+    });
+
+    var previewWrap = createElement('div', 'runtime-share-preview-wrap');
+    this._applyElementClass(previewWrap, 'previewWrap');
+    this._applyElementStyle(previewWrap, 'previewWrap', {
+      display: 'inline-flex',
+      width: 'fit-content',
+      maxWidth: '100%',
+      minWidth: '0',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '12px',
+      borderRadius: '28px',
+      boxSizing: 'border-box',
+      overflow: 'hidden',
+      marginLeft: 'auto',
+      marginRight: 'auto',
+      background: 'linear-gradient(180deg, rgba(15, 23, 42, 0.9), rgba(15, 23, 42, 0.62))',
+      border: '1px solid rgba(217, 187, 103, 0.18)',
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 50px rgba(2, 6, 23, 0.24)',
+    });
+
+    var image = createElement('img', 'runtime-share-preview-image');
+    image.src = imageDataUrl;
+    image.alt = trimString(this._getText('title', context, context.pageTitle || 'Share Image')) || 'share image';
+    this._applyElementClass(image, 'previewImage');
+    this._applyElementStyle(image, 'previewImage', {
+      display: 'block',
+      width: 'auto',
+      maxWidth: '100%',
+      maxHeight: this.options.modal.previewMaxHeight || '72vh',
+      height: 'auto',
+      borderRadius: '24px',
+      background: 'transparent',
+      marginLeft: 'auto',
+      marginRight: 'auto',
+      boxShadow: '0 24px 60px rgba(15, 23, 42, 0.36)',
+      userSelect: 'none',
+      WebkitUserDrag: 'none',
+      objectFit: 'contain',
+      objectPosition: 'center center',
+    });
+    this._applyPreviewImageLayout(image, previewWrap, context);
+    image.addEventListener('load', this._applyPreviewImageLayout.bind(this, image, previewWrap, context, image.naturalWidth, image.naturalHeight), { once: true });
+
+    previewWrap.appendChild(image);
+    panelWrap.appendChild(previewWrap);
+
+    this._titleNode.textContent = this._getPanelTitle(context) || 'Share';
+    this._hintNode.textContent = hint;
+    this._bodyNode.innerHTML = '';
+    this._bodyNode.appendChild(panelWrap);
+
+    this._downloadButton.style.display = shouldShowDownload ? 'inline-flex' : 'none';
+    this._copyButton.style.display = this.options.actions.allowCopyLink ? 'inline-flex' : 'none';
+    this._regenerateButton.style.display = this.options.actions.allowRegenerate ? 'inline-flex' : 'none';
+    this._regenerateButton.textContent = this._getText('regenerate', context, 'Regenerate');
+    this._imageDataUrl = imageDataUrl;
+  };
+
+  RuntimeShare.prototype._buildCard = async function (context, _unusedScreenshotUrl) {
+    var cardOptions = this.options.card;
+    var qrOptions = this.options.qr;
+    var helpers = this._getRenderHelpers();
+
+    var customCard = await this._runRenderer('card', [context, '', helpers]);
+    if (customCard && customCard.nodeType === 1) {
+      return customCard;
+    }
+
+    var cardTitleText = this._getCardTitle(context);
+    var cardSubtitleText = this._getCardSubtitle(context);
+    var cardDescriptionText = this._getShareDescription(context);
+    var badgeText = this._getCardBadge(context);
+    var brandText = trimString(context.shareBrand);
+    var summaryTitleText = this._getText('summaryTitle', context, 'Highlights');
+    var hasSummaryTitle = !!summaryTitleText;
+    var hasSummaryItems = context.summaryItems.length > 0;
+    var linkEnabled = cardOptions.showLink !== false && !!context.pageUrl;
+    var extraNode = null;
+    if (typeof cardOptions.renderExtra === 'function') {
+      try {
+        extraNode = await Promise.resolve(cardOptions.renderExtra(context, helpers));
+      } catch {
+        extraNode = null;
+      }
+    }
+
+    var customEmpty = null;
+    if (!hasSummaryItems && typeof this.options.renderers.summaryEmpty === 'function') {
+      try {
+        customEmpty = this.options.renderers.summaryEmpty(context, helpers);
+      } catch (rendererError2) {
+        this._reportSoftError('RENDERER_SUMMARYEMPTY_FAILED', this._getText('softRendererFailed', { locale: context.locale, name: 'summaryEmpty' }, 'summaryEmpty failed and fell back to the default implementation.'), rendererError2);
+      }
+    }
+
+    var hasRenderedEmpty = !!(customEmpty && customEmpty.nodeType === 1);
+    var hasRenderedExtra = !!(extraNode && extraNode.nodeType === 1);
+    var useAchievementStrip =
+      !linkEnabled &&
+      !hasRenderedEmpty &&
+      !hasRenderedExtra &&
+      hasSummaryItems &&
+      context.summaryItems.length <= 4;
+    var shouldCompactPortrait =
+      cardOptions.autoCompact !== false &&
+      !linkEnabled &&
+      !hasRenderedEmpty &&
+      !hasRenderedExtra &&
+      context.summaryItems.length <= 2;
+    var requestedLayout = getContextLayout(context);
+    var usePortraitCard = requestedLayout === 'portrait' && !shouldCompactPortrait;
+    var compactWidth = cardOptions.compactWidth || 760;
+    var portraitWidth = cardOptions.portraitWidth || 840;
+    if (context.summaryItems.length === 0) {
+      compactWidth = Math.min(compactWidth, 560);
+    } else if (context.summaryItems.length === 1) {
+      compactWidth = Math.min(compactWidth, 640);
+    }
+    var compactPadding = context.summaryItems.length === 0 ? 22 : 30;
+    var cardWidth = shouldCompactPortrait
+      ? Math.min(cardOptions.width, compactWidth)
+      : (usePortraitCard ? Math.min(cardOptions.width, portraitWidth) : cardOptions.width);
+    var cardPadding = shouldCompactPortrait
+      ? Math.min(cardOptions.padding, compactPadding)
+      : (usePortraitCard ? Math.min(cardOptions.padding, cardOptions.portraitPadding || 36) : cardOptions.padding);
+    var cardRadius = shouldCompactPortrait
+      ? Math.min(cardOptions.radius, 32)
+      : (usePortraitCard ? Math.min(cardOptions.radius, cardOptions.portraitRadius || 34) : cardOptions.radius);
+    var heroPadding = shouldCompactPortrait
+      ? (context.summaryItems.length === 0 ? '28px 20px 24px' : '32px 24px 28px')
+      : (usePortraitCard ? '36px 28px 32px' : '42px 38px 40px');
+    var heroRadius = shouldCompactPortrait ? '28px' : (usePortraitCard ? '30px' : '34px');
+    var heroMaxWidth = shouldCompactPortrait ? '100%' : '100%';
+    var titleSize = shouldCompactPortrait ? (context.summaryItems.length === 0 ? '42px' : '50px') : (usePortraitCard ? '52px' : '60px');
+    var subtitleSize = shouldCompactPortrait ? (context.summaryItems.length === 0 ? '22px' : '28px') : (usePortraitCard ? '28px' : '32px');
+    var descriptionSize = shouldCompactPortrait ? (context.summaryItems.length === 0 ? '15px' : '18px') : (usePortraitCard ? '19px' : '22px');
+    var descriptionMaxWidth = shouldCompactPortrait ? (context.summaryItems.length === 0 ? '300px' : '420px') : (usePortraitCard ? '460px' : '620px');
+    var qrSize = shouldCompactPortrait
+      ? Math.min(qrOptions.size, context.summaryItems.length === 0 ? 144 : 160)
+      : (usePortraitCard ? Math.min(qrOptions.size, 168) : qrOptions.size);
+
+    var card = createElement('div', 'runtime-share-card');
+    this._applyElementClass(card, 'card');
+    this._applyElementStyle(card, 'card', {
+      width: cardWidth + 'px',
+      padding: cardPadding + 'px',
+      borderRadius: cardRadius + 'px',
+      background: cardOptions.background || 'linear-gradient(180deg, #081121 0%, #0f172a 100%)',
+      color: cardOptions.textColor,
+      boxSizing: 'border-box',
+      fontFamily: "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+      position: 'relative',
+      overflow: 'hidden',
+      border: '1px solid ' + cardOptions.borderColor,
+      boxShadow: '0 28px 90px rgba(15, 23, 42, 0.34)',
+    });
+
+    var gridOverlay = createElement('div');
+    setStyles(gridOverlay, {
+      position: 'absolute',
+      inset: '0',
+      backgroundImage: 'linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)',
+      backgroundSize: shouldCompactPortrait ? '52px 52px' : '72px 72px',
+      opacity: '0.16',
+      maskImage: 'linear-gradient(180deg, rgba(0,0,0,0.82), rgba(0,0,0,0.28))',
+      WebkitMaskImage: 'linear-gradient(180deg, rgba(0,0,0,0.82), rgba(0,0,0,0.28))',
+      pointerEvents: 'none',
+    });
+    var topBeam = createElement('div');
+    setStyles(topBeam, {
+      position: 'absolute',
+      top: '0',
+      left: '8%',
+      right: '8%',
+      height: '1px',
+      background: 'linear-gradient(90deg, rgba(255,255,255,0), ' + cardOptions.borderColor + ', rgba(255,255,255,0))',
+      opacity: '0.88',
+      pointerEvents: 'none',
+    });
+    var glowTop = createElement('div');
+    setStyles(glowTop, {
+      position: 'absolute',
+      top: '-160px',
+      left: '-120px',
+      width: '420px',
+      height: '420px',
+      borderRadius: '999px',
+      background: 'radial-gradient(circle, rgba(217, 187, 103, 0.18) 0%, rgba(217, 187, 103, 0) 70%)',
+      pointerEvents: 'none',
+    });
+    var glowBottom = createElement('div');
+    setStyles(glowBottom, {
+      position: 'absolute',
+      right: '-140px',
+      bottom: '-180px',
+      width: '460px',
+      height: '460px',
+      borderRadius: '999px',
+      background: 'radial-gradient(circle, rgba(125, 211, 252, 0.14) 0%, rgba(125, 211, 252, 0) 70%)',
+      pointerEvents: 'none',
+    });
+    appendChildren(card, [gridOverlay, topBeam, glowTop, glowBottom]);
+
+    var top = createElement('div', 'runtime-share-card-top');
+    this._applyElementClass(top, 'cardTop');
+    this._applyElementStyle(top, 'cardTop', {
+      position: 'relative',
+      zIndex: '1',
+    });
+
+    var titleWrap = createElement('div', 'runtime-share-card-title-wrap');
+    this._applyElementClass(titleWrap, 'cardTitleWrap');
+    this._applyElementStyle(titleWrap, 'cardTitleWrap', {
+      minWidth: '0',
+      display: 'flex',
+      justifyContent: 'center',
+    });
+
+    var heroContent = createElement('div', 'runtime-share-card-hero');
+    this._applyElementClass(heroContent, 'cardHero');
+    this._applyElementStyle(heroContent, 'cardHero', {
+      width: '100%',
+      maxWidth: heroMaxWidth,
+      padding: heroPadding,
+      borderRadius: heroRadius,
+      textAlign: 'center',
+      background: 'linear-gradient(180deg, rgba(8, 14, 28, 0.54), rgba(8, 14, 28, 0.22))',
+      border: '1px solid ' + cardOptions.borderColor,
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03), 0 30px 72px rgba(2, 6, 23, 0.26)',
+    });
+
+    if (brandText) {
+      var eyebrow = createElement('div', 'runtime-share-card-eyebrow', brandText);
+      this._applyElementClass(eyebrow, 'cardEyebrow');
+      this._applyElementStyle(eyebrow, 'cardEyebrow', {
+        fontSize: '18px',
+        fontWeight: '700',
+        letterSpacing: '0.08em',
+        color: cardOptions.accentColor,
+        lineHeight: '1.6',
+      });
+      heroContent.appendChild(eyebrow);
+    }
+
+    if (badgeText) {
+      var badge = createElement('div', 'runtime-share-card-badge', badgeText);
+      this._applyElementClass(badge, 'cardBadge');
+      this._applyElementStyle(badge, 'cardBadge', {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginTop: brandText ? '14px' : '0',
+        padding: '10px 16px',
+        borderRadius: '999px',
+        background: 'rgba(255, 255, 255, 0.04)',
+        border: '1px solid rgba(255, 255, 255, 0.08)',
+        color: cardOptions.accentColor,
+        fontSize: '16px',
+        fontWeight: '800',
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+      });
+      heroContent.appendChild(badge);
+    }
+
+    var title = createElement('div', 'runtime-share-card-title', cardTitleText);
+    this._applyElementClass(title, 'cardTitle');
+    this._applyElementStyle(title, 'cardTitle', {
+      marginTop: badgeText || brandText ? (shouldCompactPortrait ? '18px' : '22px') : '0',
+      fontSize: titleSize,
+      fontWeight: '900',
+      lineHeight: '1.08',
+      letterSpacing: '-0.05em',
+      wordBreak: 'break-word',
+    });
+
+    heroContent.appendChild(title);
+
+    if (cardSubtitleText) {
+      var subtitle = createElement('div', 'runtime-share-card-subtitle', cardSubtitleText);
+      this._applyElementClass(subtitle, 'cardSubtitle');
+      this._applyElementStyle(subtitle, 'cardSubtitle', {
+        marginTop: shouldCompactPortrait ? '14px' : '16px',
+        fontSize: subtitleSize,
+        lineHeight: '1.4',
+        color: cardOptions.accentColor,
+        fontWeight: '700',
+        wordBreak: 'break-word',
+      });
+      heroContent.appendChild(subtitle);
+    }
+
+    if (qrOptions.enabled) {
+      var qrImageUrl = await createQRCodeImage(qrOptions, context, this);
+      if (typeof this.options.renderers.qrPanel === 'function') {
+        var customQrPanel = await this._runRenderer('qrPanel', [context, qrImageUrl, helpers]);
+        if (customQrPanel && customQrPanel.nodeType === 1) {
+          heroContent.appendChild(customQrPanel);
+        }
+      } else {
+        var qrPanel = createElement('div', 'runtime-share-card-qr');
+        this._applyElementClass(qrPanel, 'qrPanel');
+        this._applyElementStyle(qrPanel, 'qrPanel', {
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: shouldCompactPortrait ? '12px' : '16px',
+          padding: shouldCompactPortrait ? '18px 18px 20px' : '22px 22px 24px',
+          borderRadius: shouldCompactPortrait ? '26px' : '30px',
+          background: cardOptions.surfaceColor,
+          border: '1px solid ' + cardOptions.borderColor,
+          boxShadow: '0 18px 42px rgba(2, 6, 23, 0.14)',
+          marginTop: cardSubtitleText ? (shouldCompactPortrait ? '24px' : '30px') : (shouldCompactPortrait ? '20px' : '24px'),
+        });
+
+        var qrTitleText = resolveValue(qrOptions.title, context, this._getText('qrTitle', context, ''));
+        if (qrTitleText) {
+          var qrTitle = createElement('div', 'runtime-share-card-qr-title', qrTitleText);
+          this._applyElementClass(qrTitle, 'qrTitle');
+          this._applyElementStyle(qrTitle, 'qrTitle', {
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: shouldCompactPortrait ? '14px 28px' : '16px 34px',
+            borderRadius: shouldCompactPortrait ? '19px' : '22px',
+            background: 'linear-gradient(135deg, rgba(231, 200, 121, 0.90), rgba(214, 154, 67, 0.92))',
+            boxShadow: '0 16px 38px rgba(217, 187, 103, 0.18)',
+            fontSize: shouldCompactPortrait ? '22px' : '26px',
+            fontWeight: '800',
+            color: '#0b1324',
+            textAlign: 'center',
+            lineHeight: '1.3',
+          });
+          qrPanel.appendChild(qrTitle);
+        }
+
+        var qrFrame = createElement('div', 'runtime-share-card-qr-frame');
+        this._applyElementClass(qrFrame, 'qrFrame');
+        this._applyElementStyle(qrFrame, 'qrFrame', {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          position: 'relative',
+          padding: shouldCompactPortrait ? '14px' : '16px',
+          borderRadius: shouldCompactPortrait ? '24px' : '28px',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.96))',
+          border: '1px solid rgba(255,255,255,0.78)',
+          boxShadow: '0 20px 44px rgba(2, 6, 23, 0.22)',
+        });
+
+        var qrImage = createElement('img', 'runtime-share-card-qr-image');
+        qrImage.src = qrImageUrl;
+        qrImage.alt = 'QR code';
+        this._applyElementClass(qrImage, 'qrImage');
+        this._applyElementStyle(qrImage, 'qrImage', {
+          display: 'block',
+          width: qrSize + 'px',
+          height: qrSize + 'px',
+        });
+        qrFrame.appendChild(qrImage);
+        qrPanel.appendChild(qrFrame);
+
+        var qrCaptionText = resolveValue(qrOptions.caption, context, this._getText('qrCaption', context, ''));
+        if (qrCaptionText) {
+          var qrCaption = createElement('div', 'runtime-share-card-qr-caption', qrCaptionText);
+          this._applyElementClass(qrCaption, 'qrCaption');
+          this._applyElementStyle(qrCaption, 'qrCaption', {
+            maxWidth: shouldCompactPortrait ? '420px' : '560px',
+            fontSize: shouldCompactPortrait ? '16px' : '18px',
+            lineHeight: '1.7',
+            color: cardOptions.mutedTextColor,
+            textAlign: 'center',
+          });
+          qrPanel.appendChild(qrCaption);
+        }
+        heroContent.appendChild(qrPanel);
+      }
+    }
+
+    if (cardDescriptionText && cardDescriptionText !== cardSubtitleText) {
+      var description = createElement('div', 'runtime-share-card-description', cardDescriptionText);
+      this._applyElementClass(description, 'cardDescription');
+      this._applyElementStyle(description, 'cardDescription', {
+        margin: qrOptions.enabled ? (shouldCompactPortrait ? '4px auto 0' : '6px auto 0') : (shouldCompactPortrait ? '16px auto 0' : '20px auto 0'),
+        maxWidth: descriptionMaxWidth,
+        fontSize: descriptionSize,
+        lineHeight: '1.8',
+        color: cardOptions.mutedTextColor,
+        wordBreak: 'break-word',
+      });
+      heroContent.appendChild(description);
+    }
+
+    titleWrap.appendChild(heroContent);
+    top.appendChild(titleWrap);
+    card.appendChild(top);
+
+    if (hasSummaryItems || linkEnabled || hasRenderedEmpty || hasRenderedExtra) {
+      var bottom = createElement('div', 'runtime-share-card-bottom');
+      this._applyElementClass(bottom, 'cardBottom');
+      this._applyElementStyle(bottom, 'cardBottom', {
+        position: 'relative',
+        zIndex: '1',
+        marginTop: shouldCompactPortrait ? '22px' : '32px',
+      });
+
+      var summary = createElement('div', 'runtime-share-card-summary');
+      this._applyElementClass(summary, 'summary');
+      this._applyElementStyle(summary, 'summary', {
+        padding: useAchievementStrip ? '0' : (shouldCompactPortrait ? '22px' : '30px'),
+        borderRadius: useAchievementStrip ? '0' : (shouldCompactPortrait ? '24px' : '28px'),
+        background: useAchievementStrip ? 'transparent' : cardOptions.surfaceColor,
+        border: useAchievementStrip ? '0' : ('1px solid ' + cardOptions.borderColor),
+        display: 'flex',
+        flexDirection: 'column',
+        gap: shouldCompactPortrait ? '16px' : '22px',
+      });
+
+      if (hasSummaryTitle && hasSummaryItems && !useAchievementStrip) {
+        var summaryTitle = createElement('div', 'runtime-share-card-summary-title', summaryTitleText);
+        this._applyElementClass(summaryTitle, 'summaryTitle');
+        this._applyElementStyle(summaryTitle, 'summaryTitle', {
+          fontSize: shouldCompactPortrait ? '24px' : '28px',
+          fontWeight: '700',
+          color: cardOptions.textColor,
+        });
+        summary.appendChild(summaryTitle);
+      }
+
+      if (hasSummaryItems || (customEmpty && customEmpty.nodeType === 1)) {
+        var summaryGrid = createElement('div', 'runtime-share-card-summary-grid');
+        this._applyElementClass(summaryGrid, 'summaryGrid');
+        this._applyElementStyle(summaryGrid, 'summaryGrid', {
+          display: useAchievementStrip ? 'flex' : 'grid',
+          flexWrap: useAchievementStrip ? 'wrap' : '',
+          justifyContent: useAchievementStrip ? 'center' : '',
+          gridTemplateColumns: useAchievementStrip ? '' : (shouldCompactPortrait && context.summaryItems.length <= 1 ? 'minmax(0, 1fr)' : 'repeat(2, minmax(0, 1fr))'),
+          gap: useAchievementStrip
+            ? (shouldCompactPortrait ? '12px' : '14px')
+            : (hasSummaryTitle ? (shouldCompactPortrait ? '14px' : '18px') : (shouldCompactPortrait ? '16px' : '22px')),
+        });
+
+        if (hasSummaryItems) {
+          context.summaryItems.forEach(function (item, itemIndex) {
+            try {
+              if (typeof this.options.renderers.summaryItem === 'function') {
+                var customItem = this.options.renderers.summaryItem(item, context, helpers);
+                if (customItem && customItem.nodeType === 1) {
+                  summaryGrid.appendChild(customItem);
+                  return;
+                }
+              }
+            } catch (rendererError) {
+              this._reportSoftError('RENDERER_SUMMARYITEM_FAILED', this._getText('softRendererFailed', { locale: context.locale, name: 'summaryItem' }, 'summaryItem failed and fell back to the default implementation.'), rendererError);
+            }
+            var block = createElement('div', 'runtime-share-card-summary-item');
+            this._applyElementClass(block, 'summaryItem');
+            this._applyElementStyle(block, 'summaryItem', {
+              padding: useAchievementStrip
+                ? (item.emphasis ? '16px 24px' : '14px 20px')
+                : (shouldCompactPortrait ? '16px 18px' : '20px 22px'),
+              borderRadius: useAchievementStrip ? '999px' : (shouldCompactPortrait ? '18px' : '22px'),
+              background: useAchievementStrip
+                ? (item.emphasis
+                  ? 'linear-gradient(135deg, rgba(231, 200, 121, 0.20), rgba(255,255,255,0.08))'
+                  : 'rgba(255, 255, 255, 0.05)')
+                : (item.emphasis
+                  ? 'linear-gradient(135deg, rgba(231, 200, 121, 0.16), rgba(255,255,255,0.06))'
+                  : 'linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.04))'),
+              border: '1px solid ' + (item.emphasis ? cardOptions.borderColor : 'rgba(255, 255, 255, 0.08)'),
+              boxShadow: useAchievementStrip ? '0 12px 30px rgba(2, 6, 23, 0.16)' : '0 16px 40px rgba(2, 6, 23, 0.12)',
+              minWidth: useAchievementStrip ? (shouldCompactPortrait ? '160px' : '188px') : '',
+              textAlign: useAchievementStrip ? 'center' : '',
+              gridColumn: !useAchievementStrip && item.emphasis && context.summaryItems.length > 1 && itemIndex === 0 ? '1 / -1' : '',
+            });
+
+            var label = createElement('div', 'runtime-share-card-summary-label', item.label);
+            this._applyElementClass(label, 'summaryLabel');
+            this._applyElementStyle(label, 'summaryLabel', {
+              fontSize: useAchievementStrip
+                ? (shouldCompactPortrait ? '14px' : '15px')
+                : (shouldCompactPortrait ? (hasSummaryTitle ? '18px' : '20px') : (hasSummaryTitle ? '22px' : '26px')),
+              color: useAchievementStrip && item.emphasis ? cardOptions.accentColor : cardOptions.mutedTextColor,
+              lineHeight: '1.45',
+              letterSpacing: useAchievementStrip ? '0.08em' : 'normal',
+              textTransform: useAchievementStrip ? 'uppercase' : 'none',
+            });
+
+            var value = createElement('div', 'runtime-share-card-summary-value', item.value);
+            this._applyElementClass(value, 'summaryValue');
+            this._applyElementStyle(value, 'summaryValue', {
+              marginTop: useAchievementStrip ? '6px' : (shouldCompactPortrait ? '8px' : '10px'),
+              fontSize: useAchievementStrip
+                ? (item.emphasis ? (shouldCompactPortrait ? '28px' : '32px') : (shouldCompactPortrait ? '20px' : '22px'))
+                : (shouldCompactPortrait
+                  ? (item.emphasis ? (hasSummaryTitle ? '32px' : '36px') : (hasSummaryTitle ? '24px' : '28px'))
+                  : (item.emphasis ? (hasSummaryTitle ? '38px' : '44px') : (hasSummaryTitle ? '32px' : '38px'))),
+              fontWeight: item.emphasis ? '800' : '700',
+              lineHeight: '1.2',
+              wordBreak: 'break-word',
+              color: useAchievementStrip && item.emphasis ? cardOptions.textColor : '',
+            });
+
+            appendChildren(block, [label, value]);
+            summaryGrid.appendChild(block);
+          }, this);
+        } else {
+          summaryGrid.appendChild(customEmpty);
+        }
+
+        summary.appendChild(summaryGrid);
+      }
+
+      if (linkEnabled) {
+        var linkBlock = createElement('div', 'runtime-share-card-link-block');
+        this._applyElementClass(linkBlock, 'linkBlock');
+        this._applyElementStyle(linkBlock, 'linkBlock', {
+          padding: shouldCompactPortrait ? '16px 18px' : '20px 22px',
+          borderRadius: shouldCompactPortrait ? '18px' : '22px',
+          background: 'rgba(255, 255, 255, 0.05)',
+          border: '1px solid rgba(255, 255, 255, 0.08)',
+        });
+
+        var linkLabel = createElement('div', 'runtime-share-card-link-label', this._getText('linkLabel', context, 'Current Page'));
+        this._applyElementClass(linkLabel, 'linkLabel');
+        this._applyElementStyle(linkLabel, 'linkLabel', {
+          fontSize: shouldCompactPortrait ? '18px' : '22px',
+          color: cardOptions.mutedTextColor,
+        });
+
+        var linkValue = createElement('div', 'runtime-share-card-link-value', context.pageUrl);
+        this._applyElementClass(linkValue, 'linkValue');
+        this._applyElementStyle(linkValue, 'linkValue', {
+          marginTop: '10px',
+          fontSize: shouldCompactPortrait ? '18px' : '24px',
+          lineHeight: '1.55',
+          wordBreak: 'break-all',
+        });
+
+        appendChildren(linkBlock, [linkLabel, linkValue]);
+        summary.appendChild(linkBlock);
+      }
+
+      if (extraNode && extraNode.nodeType === 1) {
+        summary.appendChild(extraNode);
+      }
+
+      bottom.appendChild(summary);
+      card.appendChild(bottom);
+    }
+
+    return card;
+  };
+
+  RuntimeShare.prototype._dedupePosterTitleIcon = function (card, context) {
+    var titleText = trimString(this._getCardTitle(context));
+    if (!titleText || !startsWithIconCharacter(titleText)) {
+      return;
+    }
+
+    var containers = [card].concat(Array.prototype.slice.call(card.querySelectorAll('div, section, article, header')).slice(0, 16));
+    var containerIndex;
+    for (containerIndex = 0; containerIndex < containers.length; containerIndex += 1) {
+      var children = getElementChildren(containers[containerIndex]);
+      var childIndex;
+      var iconChild = null;
+      var titleChild = null;
+      if (children.length < 2 || children.length > 5) {
+        continue;
+      }
+      for (childIndex = 0; childIndex < children.length; childIndex += 1) {
+        var child = children[childIndex];
+        var childStyle = getComputedStyleSafe(child);
+        var childText = trimString(child.textContent);
+        if (!childText || (childStyle && isOutOfFlowStyle(childStyle))) {
+          continue;
+        }
+        if (!iconChild && isStandaloneIconText(childText) && !child.querySelector('img,canvas,svg,video')) {
+          iconChild = child;
+        }
+        if (
+          !titleChild
+          && !isStandaloneIconText(childText)
+          && (childText === titleText || childText.indexOf(titleText) === 0 || titleText.indexOf(childText) === 0)
+        ) {
+          titleChild = child;
+        }
+      }
+      if (iconChild && titleChild && iconChild !== titleChild) {
+        var iconText = trimString(iconChild.textContent);
+        if (iconText && titleText.indexOf(iconText) === 0 && iconChild.parentNode) {
+          iconChild.parentNode.removeChild(iconChild);
+          return;
+        }
+      }
+    }
+  };
+
+  RuntimeShare.prototype._dedupePosterFragments = function (card) {
+    var fragmentNodes;
+    var groups = Object.create(null);
+    if (!card || !card.querySelectorAll) {
+      return;
+    }
+
+    fragmentNodes = Array.prototype.slice.call(card.querySelectorAll('[data-share-fragment]'));
+    fragmentNodes.forEach(function (node) {
+      var fragmentName = trimString(node.getAttribute('data-share-fragment'));
+      if (!fragmentName) {
+        return;
+      }
+      if (!groups[fragmentName]) {
+        groups[fragmentName] = [];
+      }
+      groups[fragmentName].push(node);
+    });
+
+    Object.keys(groups).forEach(function (fragmentName) {
+      var nodes = groups[fragmentName];
+      var keepNode;
+      var hasNestedDuplicate;
+      if (!nodes || nodes.length < 2) {
+        return;
+      }
+      hasNestedDuplicate = nodes.some(function (node) {
+        var current = node.parentNode;
+        while (current && current.nodeType === 1 && current !== card) {
+          if (current.hasAttribute && current.hasAttribute('data-share-fragment')) {
+            return true;
+          }
+          current = current.parentNode;
+        }
+        return false;
+      });
+      if (!hasNestedDuplicate) {
+        return;
+      }
+      keepNode = nodes[nodes.length - 1];
+      nodes.forEach(function (node) {
+        if (node === keepNode || !node.parentNode || node === card) {
+          return;
+        }
+        node.parentNode.removeChild(node);
+      });
+    });
+  };
+
+  RuntimeShare.prototype._collapsePosterEmptyNodes = function (card) {
+    var containers;
+    if (!card || !card.querySelectorAll) {
+      return;
+    }
+
+    containers = Array.prototype.slice.call(card.querySelectorAll('div, section, article, header, footer, nav, aside'));
+    containers.reverse().forEach(function (node) {
+      var style = getComputedStyleSafe(node);
+      if (!style || isOutOfFlowStyle(style) || node === card) {
+        return;
+      }
+      if (trimString(node.textContent) || getElementChildren(node).length) {
+        return;
+      }
+      if (node.parentNode) {
+        node.parentNode.removeChild(node);
+      }
+    });
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article, header, footer, nav, aside'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var children;
+      if (!style || isOutOfFlowStyle(style)) {
+        return;
+      }
+      children = getElementChildren(node).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle && !isOutOfFlowStyle(childStyle);
+      });
+      if (children.length !== 1) {
+        return;
+      }
+      if (style.display === 'flex') {
+        if (!trimString(style.justifyContent) || style.justifyContent === 'normal' || style.justifyContent === 'flex-start' || style.justifyContent === 'space-between') {
+          setStyles(node, {
+            justifyContent: 'center',
+          });
+        }
+        setStyles(children[0], {
+          marginLeft: 'auto',
+          marginRight: 'auto',
+        });
+      } else if (style.display === 'grid') {
+        setStyles(node, {
+          justifyItems: 'center',
+        });
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterBlocks = function (card, context) {
+    var layout = getContextLayout(context);
+    var cardSize = getRenderTargetSize(card, null);
+    var rootWidth = cardSize.width;
+    var rootHeight = cardSize.height;
+    var cardStyle = getComputedStyleSafe(card);
+    if (!(rootWidth > 0)) {
+      return;
+    }
+
+    setStyles(card, {
+      marginLeft: 'auto',
+      marginRight: 'auto',
+      boxSizing: 'border-box',
+    });
+
+    if (layout === 'portrait') {
+      setStyles(card, {
+        paddingTop: clampPixelValue(cardStyle && cardStyle.paddingTop, 16, 24, ''),
+        paddingRight: clampPixelValue(cardStyle && cardStyle.paddingRight, 16, 24, ''),
+        paddingBottom: clampPixelValue(cardStyle && cardStyle.paddingBottom, 16, 24, ''),
+        paddingLeft: clampPixelValue(cardStyle && cardStyle.paddingLeft, 16, 24, ''),
+      });
+      if (cardStyle && (cardStyle.display === 'grid' || (cardStyle.display === 'flex' && (cardStyle.flexDirection || 'row').indexOf('column') === 0))) {
+        setStyles(card, {
+          gap: clampPixelValue(trimString(cardStyle.rowGap) || trimString(cardStyle.gap), 0, 14, ''),
+        });
+      }
+    }
+
+    if (layout === 'portrait' && rootHeight > 0 && rootHeight < rootWidth * 0.62) {
+      var portraitMinHeight = cardStyle && cardStyle.display === 'grid'
+        ? Math.round(rootWidth * 0.72)
+        : Math.round(rootWidth * 0.78);
+      setStyles(card, {
+        minHeight: portraitMinHeight + 'px',
+      });
+      if (cardStyle && cardStyle.display === 'flex' && (cardStyle.flexDirection || 'row').indexOf('column') === 0) {
+        var justify = trimString(cardStyle.justifyContent);
+        if (!justify || justify === 'normal' || justify === 'flex-start') {
+          setStyles(card, {
+            justifyContent: 'space-between',
+          });
+        }
+      } else if (cardStyle && cardStyle.display === 'grid') {
+        setStyles(card, {
+          alignContent: 'start',
+        });
+      }
+    }
+
+    getElementChildren(card).forEach(function (child) {
+      var style = getComputedStyleSafe(child);
+      var childWidth;
+      var childHasStructuredContent;
+      if (!style || isOutOfFlowStyle(style)) {
+        return;
+      }
+      childWidth = getRenderTargetSize(child, null).width;
+      childHasStructuredContent = !!(child.querySelector && child.querySelector('div, section, article, ul, ol, img, canvas, svg, video'));
+      setStyles(child, {
+        maxWidth: '100%',
+        minWidth: '0',
+        boxSizing: 'border-box',
+      });
+      if (layout === 'portrait' && childHasStructuredContent && childWidth > 0 && childWidth < rootWidth * 0.9) {
+        setStyles(child, {
+          width: '100%',
+          maxWidth: '100%',
+          justifySelf: 'stretch',
+          marginLeft: '0',
+          marginRight: '0',
+        });
+      }
+      if (childWidth > 0 && childWidth < rootWidth * 0.98) {
+        setStyles(child, {
+          marginLeft: 'auto',
+          marginRight: 'auto',
+        });
+      }
+      if (layout === 'portrait' && childWidth > 0 && childWidth < rootWidth * 0.78 && (!trimString(style.textAlign) || style.textAlign === 'left' || style.textAlign === 'start')) {
+        setStyles(child, {
+          textAlign: 'center',
+        });
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterMetricRows = function (card) {
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (!(rootWidth > 0) || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article'), function (row) {
+      var rowStyle = getComputedStyleSafe(row);
+      var children;
+      var childStyles;
+      var rowWidth;
+      var gapValue;
+      var centeredSignal;
+      var hasNestedBlockChild;
+      var simpleCenteredRow;
+      var compactMetricRow;
+      if (!rowStyle || rowStyle.display !== 'flex' || (rowStyle.flexDirection || 'row').indexOf('column') === 0 || isOutOfFlowStyle(rowStyle)) {
+        return;
+      }
+      children = getElementChildren(row).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle && !isOutOfFlowStyle(childStyle);
+      });
+      if (children.length < 2 || children.length > 5) {
+        return;
+      }
+      if (row.querySelector('img, canvas, svg, video')) {
+        return;
+      }
+      if (normalizeTextContent(row.textContent).length > 120) {
+        return;
+      }
+      rowWidth = getRenderTargetSize(row, null).width;
+      if (!(rowWidth > 0) || rowWidth < Math.min(rootWidth * 0.34, 220)) {
+        return;
+      }
+      hasNestedBlockChild = children.some(function (child) {
+        return getElementChildren(child).some(function (grandchild) {
+          var tagName = trimString(grandchild && grandchild.tagName).toUpperCase();
+          return getElementChildren(grandchild).length > 0
+            || tagName === 'DIV'
+            || tagName === 'P'
+            || tagName === 'H1'
+            || tagName === 'H2'
+            || tagName === 'H3'
+            || tagName === 'H4'
+            || tagName === 'H5'
+            || tagName === 'H6'
+            || tagName === 'SECTION'
+            || tagName === 'ARTICLE'
+            || tagName === 'HEADER'
+            || tagName === 'FOOTER';
+        });
+      });
+      if (hasNestedBlockChild) {
+        return;
+      }
+      childStyles = children.map(function (child) {
+        return getComputedStyleSafe(child);
+      });
+      simpleCenteredRow = children.every(function (child) {
+        var grandChildren = getElementChildren(child);
+        return normalizeTextContent(child.textContent).length <= 24
+          && grandChildren.length <= 2
+          && grandChildren.every(function (grandchild) {
+            return getElementChildren(grandchild).length === 0;
+          });
+      });
+      centeredSignal = rowStyle.justifyContent === 'center'
+        || (rowStyle.textAlign === 'center' && simpleCenteredRow)
+        || rowStyle.borderTopStyle !== 'none'
+        || rowStyle.borderBottomStyle !== 'none';
+      if (!centeredSignal) {
+        return;
+      }
+      gapValue = trimString(rowStyle.columnGap) || trimString(rowStyle.gap) || '16px';
+      compactMetricRow = children.length <= 4 && childStyles.every(function (childStyle, index) {
+        return !!childStyle
+          && !isOutOfFlowStyle(childStyle)
+          && childStyle.display === 'flex'
+          && (childStyle.flexDirection || 'row').indexOf('column') !== 0
+          && normalizeTextContent(children[index].textContent).length <= 24;
+      });
+      if (compactMetricRow) {
+        setStyles(row, {
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: clampPixelValue(gapValue, 8, 14, '10px'),
+          alignItems: 'stretch',
+          justifyContent: 'center',
+          width: '100%',
+          textAlign: 'center',
+          boxSizing: 'border-box',
+        });
+      } else {
+        setStyles(row, {
+          display: 'grid',
+          gridTemplateColumns: 'repeat(' + children.length + ', minmax(0, 1fr))',
+          gap: gapValue,
+          alignItems: 'start',
+          justifyItems: 'center',
+          width: '100%',
+          textAlign: 'center',
+          boxSizing: 'border-box',
+        });
+      }
+      children.forEach(function (child, childIndex) {
+        var childStyle = childStyles[childIndex];
+        var grandChildren;
+        if (!childStyle || isOutOfFlowStyle(childStyle)) {
+          return;
+        }
+        if (compactMetricRow) {
+          setStyles(child, {
+            width: 'auto',
+            minWidth: '0',
+            maxWidth: '100%',
+            flex: '0 0 auto',
+            margin: '0',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexWrap: 'nowrap',
+            whiteSpace: 'nowrap',
+            textAlign: 'center',
+            boxSizing: 'border-box',
+            gap: clampPixelValue(trimString(childStyle.columnGap) || trimString(childStyle.gap), 6, 10, '8px'),
+            paddingTop: clampPixelValue(childStyle.paddingTop, 6, 10, ''),
+            paddingBottom: clampPixelValue(childStyle.paddingBottom, 6, 10, ''),
+            paddingLeft: clampPixelValue(childStyle.paddingLeft, 10, 18, ''),
+            paddingRight: clampPixelValue(childStyle.paddingRight, 10, 18, ''),
+          });
+          grandChildren = getElementChildren(child);
+          grandChildren.forEach(function (grandchild, grandchildIndex) {
+            var grandchildStyle = getComputedStyleSafe(grandchild);
+            if (!grandchildStyle || isOutOfFlowStyle(grandchildStyle)) {
+              return;
+            }
+            setStyles(grandchild, {
+              flex: '0 0 auto',
+              minWidth: '0',
+              maxWidth: '100%',
+              whiteSpace: 'nowrap',
+              wordBreak: 'keep-all',
+              overflowWrap: 'normal',
+            });
+            if (grandchildIndex === grandChildren.length - 1 && grandchildIndex > 0) {
+              setStyles(grandchild, {
+                marginLeft: '8px',
+              });
+            }
+          });
+        } else {
+          setStyles(child, {
+            width: '100%',
+            minWidth: '0',
+            margin: '0',
+            textAlign: 'center',
+            boxSizing: 'border-box',
+          });
+        }
+        if (childStyle.display === 'flex' && (childStyle.flexDirection || 'row').indexOf('column') === 0) {
+          setStyles(child, {
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+          });
+        } else if (compactMetricRow && childStyle.display === 'flex') {
+          setStyles(child, {
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexWrap: 'nowrap',
+          });
+        } else if (childStyle.display !== 'grid') {
+          setStyles(child, {
+            display: 'grid',
+            justifyItems: 'center',
+            alignContent: 'start',
+            gap: trimString(childStyle.rowGap) || trimString(childStyle.gap) || '4px',
+          });
+        } else {
+          setStyles(child, {
+            justifyItems: 'center',
+          });
+        }
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterStatsFragments = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !(rootWidth > 0) || !card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('[data-share-fragment="stats"]'), function (panel) {
+      var panelStyle = getComputedStyleSafe(panel);
+      var children;
+      var panelWidth;
+      var gapValue;
+      var gapPx;
+      var maxTextLength = 0;
+      var minColumnWidth = 120;
+      var maxColumns;
+      var targetColumns;
+      var candidateColumns;
+      if (!panelStyle || isOutOfFlowStyle(panelStyle)) {
+        return;
+      }
+      if (trimString(panel.className).indexOf('stats') === -1) {
+        return;
+      }
+
+      children = getElementChildren(panel).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle
+          && !isOutOfFlowStyle(childStyle)
+          && trimString(child.className).indexOf('stat') !== -1;
+      });
+      if (children.length < 2 || children.length > 4) {
+        return;
+      }
+
+      panelWidth = getRenderTargetSize(panel, null).width;
+      if (!(panelWidth > 0)) {
+        return;
+      }
+
+      children.forEach(function (child) {
+        maxTextLength = Math.max(maxTextLength, normalizeTextContent(child.textContent).length);
+      });
+      if (maxTextLength > 24) {
+        minColumnWidth = 180;
+      } else if (maxTextLength > 14) {
+        minColumnWidth = 150;
+      }
+      gapValue = clampPixelValue(trimString(panelStyle.columnGap) || trimString(panelStyle.gap), 0, 12, '0');
+      gapPx = toPixelValue(gapValue);
+      maxColumns = Math.floor((panelWidth + gapPx) / (minColumnWidth + gapPx));
+      if (!isFinite(maxColumns) || maxColumns < 1) {
+        maxColumns = 1;
+      }
+      maxColumns = Math.max(1, Math.min(children.length, 3, maxColumns));
+      targetColumns = 1;
+      for (candidateColumns = 1; candidateColumns <= maxColumns; candidateColumns += 1) {
+        var currentLastRow = children.length % targetColumns || targetColumns;
+        var currentRows = Math.ceil(children.length / targetColumns);
+        var candidateLastRow = children.length % candidateColumns || candidateColumns;
+        var candidateRows = Math.ceil(children.length / candidateColumns);
+        if (candidateLastRow > currentLastRow) {
+          targetColumns = candidateColumns;
+          continue;
+        }
+        if (candidateLastRow === currentLastRow && candidateRows < currentRows) {
+          targetColumns = candidateColumns;
+          continue;
+        }
+        if (candidateLastRow === currentLastRow && candidateRows === currentRows && candidateColumns > targetColumns) {
+          targetColumns = candidateColumns;
+        }
+      }
+
+      setStyles(panel, {
+        display: 'grid',
+        gridTemplateColumns: 'repeat(' + targetColumns + ', minmax(0, 1fr))',
+        gridTemplateRows: 'none',
+        gridAutoFlow: 'row',
+        gridAutoColumns: 'minmax(0, 1fr)',
+        gridAutoRows: 'auto',
+        alignItems: 'stretch',
+        alignContent: 'start',
+        justifyItems: 'stretch',
+        justifyContent: 'center',
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: '0',
+        height: 'auto',
+        minHeight: '0',
+        maxHeight: 'none',
+        blockSize: 'auto',
+        gap: gapValue,
+        textAlign: 'center',
+        boxSizing: 'border-box',
+        marginTop: '0',
+        marginBottom: clampPixelValue(panelStyle.marginBottom, 0, 12, '8px'),
+      });
+
+      children.forEach(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        var grandChildren;
+        if (!childStyle || isOutOfFlowStyle(childStyle)) {
+          return;
+        }
+        setStyles(child, {
+          display: 'grid',
+          gridTemplateColumns: 'minmax(0, 1fr)',
+          gridTemplateRows: 'repeat(2, auto)',
+          alignContent: 'start',
+          justifyItems: 'center',
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: '0',
+          height: 'auto',
+          minHeight: '0',
+          maxHeight: 'none',
+          blockSize: 'auto',
+          margin: '0',
+          textAlign: 'center',
+          boxSizing: 'border-box',
+          paddingTop: clampPixelValue(childStyle.paddingTop, 10, 14, ''),
+          paddingRight: clampPixelValue(childStyle.paddingRight, 12, 16, ''),
+          paddingBottom: clampPixelValue(childStyle.paddingBottom, 10, 14, ''),
+          paddingLeft: clampPixelValue(childStyle.paddingLeft, 12, 16, ''),
+        });
+
+        grandChildren = getElementChildren(child);
+        grandChildren.forEach(function (grandchild) {
+          var grandchildStyle = getComputedStyleSafe(grandchild);
+          if (!grandchildStyle || isOutOfFlowStyle(grandchildStyle)) {
+            return;
+          }
+          setStyles(grandchild, {
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: '0',
+            marginLeft: '0',
+            marginRight: '0',
+            textAlign: 'center',
+            justifySelf: 'center',
+            alignSelf: 'start',
+            boxSizing: 'border-box',
+          });
+        });
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterWideGrids = function (card, context) {
+    var rootWidth = getRenderTargetSize(card, null).width;
+    var layout = getContextLayout(context);
+    if (layout !== 'portrait' || !(rootWidth > 0) || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article'), function (row) {
+      var rowStyle = getComputedStyleSafe(row);
+      var children;
+      var rowWidth;
+      var estimatedWidth = 0;
+      var gapPx;
+      var targetColumns;
+      if (!rowStyle || rowStyle.display !== 'grid' || isOutOfFlowStyle(rowStyle)) {
+        return;
+      }
+      children = getElementChildren(row).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle && !isOutOfFlowStyle(childStyle);
+      });
+      if (children.length < 3 || children.length > 6) {
+        return;
+      }
+      if (row.querySelector('img, canvas, svg, video')) {
+        return;
+      }
+      rowWidth = getRenderTargetSize(row, null).width;
+      gapPx = toPixelValue(trimString(rowStyle.columnGap) || trimString(rowStyle.gap));
+      children.forEach(function (child) {
+        var childWidth = getRenderTargetSize(child, null).width;
+        if (childWidth > 0) {
+          estimatedWidth += childWidth;
+        }
+      });
+      estimatedWidth += Math.max(0, children.length - 1) * gapPx;
+      if (!(rowWidth > rootWidth * 0.92) && !(estimatedWidth > rootWidth * 1.04)) {
+        return;
+      }
+      targetColumns = children.length >= 4 ? 2 : 1;
+      setStyles(row, {
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: '0',
+        height: 'auto',
+        minHeight: '0',
+        maxHeight: 'none',
+        marginLeft: '0',
+        marginRight: '0',
+        overflow: 'visible',
+        boxSizing: 'border-box',
+        gridTemplateColumns: 'repeat(' + targetColumns + ', minmax(0, 1fr))',
+        gap: clampPixelValue(trimString(rowStyle.columnGap) || trimString(rowStyle.gap), 8, 14, ''),
+      });
+      if (row.parentNode && row.parentNode.nodeType === 1 && row.parentNode !== card) {
+        setStyles(row.parentNode, {
+          height: 'auto',
+          minHeight: '0',
+          maxHeight: 'none',
+          overflow: 'visible',
+        });
+      }
+      children.forEach(function (child) {
+        setStyles(child, {
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: '0',
+          margin: '0',
+          boxSizing: 'border-box',
+        });
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterThemeSurfaces = function (card, context) {
+    var layout = getContextLayout(context);
+    var cardOptions = this.options.card || {};
+    var rootWidth = getRenderTargetSize(card, null).width;
+    var surfaceParsed = parseCssColor(cardOptions.surfaceColor);
+    var textParsed = parseCssColor(cardOptions.textColor);
+    var mutedParsed = parseCssColor(cardOptions.mutedTextColor) || textParsed;
+    var accentParsed = parseCssColor(cardOptions.accentColor) || textParsed;
+    var borderColor = trimString(cardOptions.borderColor);
+    var normalizedSurface;
+    var normalizedAccentSurface;
+    var normalizedStrongText;
+    var normalizedMutedText;
+    var useDarkSurface;
+    var useLightSurface;
+    var expectLightText;
+    var oppositeSurfaceCheck;
+    var mismatchedTextCheck;
+    if (layout !== 'portrait' || !(rootWidth > 0) || !card || !card.querySelectorAll) {
+      return;
+    }
+    useDarkSurface = isClearlyDarkColor(surfaceParsed) && isClearlyLightColor(textParsed);
+    useLightSurface = isClearlyLightColor(surfaceParsed) && isClearlyDarkColor(textParsed);
+    if (!useDarkSurface && !useLightSurface) {
+      return;
+    }
+    expectLightText = useDarkSurface;
+
+    normalizedSurface = toRgbaString(surfaceParsed, Math.max(0.78, surfaceParsed.a || 0));
+    if (useLightSurface) {
+      normalizedSurface = toRgbaString(surfaceParsed, Math.max(0.9, surfaceParsed.a || 0));
+    }
+    normalizedAccentSurface = toRgbaString(accentParsed, 0.16);
+    normalizedStrongText = toRgbaString(textParsed, 1);
+    normalizedMutedText = toRgbaString(mutedParsed, mutedParsed && mutedParsed.a > 0 ? mutedParsed.a : 0.78);
+    oppositeSurfaceCheck = useDarkSurface ? isClearlyLightColor : isClearlyDarkColor;
+    mismatchedTextCheck = expectLightText ? isClearlyDarkColor : isClearlyLightColor;
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article, li'), function (panel) {
+      var panelStyle = getComputedStyleSafe(panel);
+      var panelBg;
+      var panelWidth;
+      var panelHeight;
+      var panelText;
+      var isWideOppositePanel;
+      if (!panelStyle || isOutOfFlowStyle(panelStyle) || panel === card) {
+        return;
+      }
+      if (hasLikelyQrDescendant(panel) || panel.querySelector('img, canvas, svg, video')) {
+        return;
+      }
+      panelBg = parseCssColor(panelStyle.backgroundColor);
+      panelWidth = getRenderTargetSize(panel, null).width;
+      panelHeight = getRenderTargetSize(panel, null).height;
+      panelText = trimString(panel.textContent);
+      isWideOppositePanel = panelWidth > rootWidth * 0.22 && panelHeight > 34;
+      if (!oppositeSurfaceCheck(panelBg) || !panelText || !isWideOppositePanel) {
+        return;
+      }
+
+      setStyles(panel, {
+        background: normalizedSurface,
+        color: normalizedStrongText,
+        borderColor: borderColor || panelStyle.borderColor,
+      });
+      panel.__runtimeShareThemeSurface = true;
+
+      Array.prototype.forEach.call(panel.querySelectorAll('*'), function (inner) {
+        var innerStyle = getComputedStyleSafe(inner);
+        var innerBg;
+        var innerWidth;
+        var innerHeight;
+        var fontWeight = parseInt(innerStyle && innerStyle.fontWeight, 10);
+        if (!innerStyle || isOutOfFlowStyle(innerStyle)) {
+          return;
+        }
+        if (hasLikelyQrDescendant(inner) || inner.querySelector('img, canvas, svg, video')) {
+          return;
+        }
+
+        innerBg = parseCssColor(innerStyle.backgroundColor);
+        innerWidth = getRenderTargetSize(inner, null).width;
+        innerHeight = getRenderTargetSize(inner, null).height;
+        if (!isFinite(fontWeight)) {
+          fontWeight = 400;
+        }
+
+        if (isWideOppositePanel && oppositeSurfaceCheck(innerBg) && innerWidth > 0 && innerWidth < rootWidth * 0.34 && innerHeight > 18 && innerHeight < 96) {
+          setStyles(inner, {
+            background: normalizedAccentSurface,
+            borderColor: borderColor || innerStyle.borderColor,
+          });
+        }
+      });
+    });
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, p, span, strong, b, small, label, li, h1, h2, h3, h4, h5, h6'), function (node) {
+      var nodeStyle = getComputedStyleSafe(node);
+      var nodeText;
+      var nodeTextColor;
+      var nodeFontSize;
+      var nodeFontWeight = parseInt(nodeStyle && nodeStyle.fontWeight, 10);
+      if (!nodeStyle || isOutOfFlowStyle(nodeStyle)) {
+        return;
+      }
+      if (hasLikelyQrDescendant(node) || node.querySelector('img, canvas, svg, video')) {
+        return;
+      }
+      nodeText = trimString(node.textContent);
+      if (!nodeText) {
+        return;
+      }
+      nodeTextColor = parseCssColor(nodeStyle.color);
+      if (!mismatchedTextCheck(nodeTextColor)) {
+        return;
+      }
+      if (hasLocalOppositeSurface(node, card, oppositeSurfaceCheck, Math.max(56, rootWidth * 0.08), 24)) {
+        return;
+      }
+      nodeFontSize = toPixelValue(nodeStyle.fontSize);
+      if (!isFinite(nodeFontWeight)) {
+        nodeFontWeight = 400;
+      }
+      if (nodeText.length <= 2 && /[^\d\s.%+-]/.test(nodeText) && nodeFontSize >= 16) {
+        setStyles(node, {
+          color: toRgbaString(accentParsed, 1),
+        });
+      } else {
+        setStyles(node, {
+          color: nodeFontSize >= 15 || nodeFontWeight >= 600 ? normalizedStrongText : normalizedMutedText,
+        });
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterHeaderGradientTitles = function (card) {
+    if (!card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('[data-share-fragment="header"] h1, [data-share-fragment="header"] h2, [data-share-fragment="header"] h3'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var parent = node && node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null;
+      var parentStyle = getComputedStyleSafe(parent);
+      var text = trimString(node.textContent);
+      var textColor = parseCssColor(style && style.color);
+      var fillColor = parseCssColor(style && style.webkitTextFillColor);
+      var backgroundImage = trimString(style && style.backgroundImage);
+      var clipsText;
+      var needsFallback;
+      var fallbackColor;
+      if (!style || !text) {
+        return;
+      }
+      clipsText = style.backgroundClip === 'text' || style.webkitBackgroundClip === 'text';
+      needsFallback = clipsText
+        && backgroundImage.indexOf('gradient(') >= 0
+        && (
+          isNearTransparentColorValue(style.color, textColor)
+          || isNearTransparentColorValue(style.webkitTextFillColor, fillColor)
+        );
+      if (!needsFallback) {
+        return;
+      }
+      fallbackColor = extractSolidColorFromCssImage(backgroundImage, parentStyle && parentStyle.color);
+      setStyles(node, {
+        color: fallbackColor,
+        background: 'none',
+        backgroundImage: 'none',
+        backgroundClip: 'border-box',
+        WebkitBackgroundClip: 'border-box',
+        WebkitTextFillColor: fallbackColor,
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterHeaderPanels = function (card) {
+    if (!card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('[data-share-fragment="header"]'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var backgroundColor = parseCssColor(style && style.backgroundColor);
+      var next = node && node.nextElementSibling && node.nextElementSibling.nodeType === 1 ? node.nextElementSibling : null;
+      var nextStyle = getComputedStyleSafe(next);
+      var currentRadius;
+      var nextRadius;
+      var targetRadius;
+      if (!style || isOutOfFlowStyle(style) || !backgroundColor || backgroundColor.a < 0.12) {
+        return;
+      }
+      currentRadius = Math.max(
+        toPixelValue(style.borderTopLeftRadius),
+        toPixelValue(style.borderTopRightRadius),
+        toPixelValue(style.borderBottomRightRadius),
+        toPixelValue(style.borderBottomLeftRadius)
+      );
+      if (currentRadius >= 8) {
+        return;
+      }
+      nextRadius = Math.max(
+        toPixelValue(nextStyle && nextStyle.borderTopLeftRadius),
+        toPixelValue(nextStyle && nextStyle.borderTopRightRadius),
+        toPixelValue(nextStyle && nextStyle.borderBottomRightRadius),
+        toPixelValue(nextStyle && nextStyle.borderBottomLeftRadius)
+      );
+      targetRadius = Math.max(16, Math.min(nextRadius || 24, 32));
+      setStyles(node, {
+        borderRadius: targetRadius + 'px',
+        overflow: 'hidden',
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterPrimarySections = function (card, context) {
+    var rootWidth = getRenderTargetSize(card, null).width;
+    var layout = getContextLayout(context);
+    if (!(rootWidth > 0) || !card || !card.children) {
+      return;
+    }
+
+    getElementChildren(card).forEach(function (section, sectionIndex) {
+      var sectionStyle = getComputedStyleSafe(section);
+      var sectionChildren;
+      var sectionWidth;
+      var mediaNodes;
+      var firstTextChild = null;
+      var lastTextChild = null;
+
+      if (!sectionStyle || isOutOfFlowStyle(sectionStyle)) {
+        return;
+      }
+      sectionChildren = getElementChildren(section);
+      if (!sectionChildren.length) {
+        return;
+      }
+
+      sectionWidth = getRenderTargetSize(section, null).width;
+      mediaNodes = section.querySelectorAll ? section.querySelectorAll('img, canvas, svg, video') : [];
+
+      if (layout === 'portrait' && sectionWidth > 0 && sectionWidth < rootWidth * 0.92 && (sectionChildren.length > 1 || mediaNodes.length)) {
+        setStyles(section, {
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: '0',
+          marginLeft: '0',
+          marginRight: '0',
+          boxSizing: 'border-box',
+        });
+      }
+
+      if (layout === 'portrait') {
+        setStyles(section, {
+          paddingTop: clampPixelValue(sectionStyle && sectionStyle.paddingTop, 0, 18, ''),
+          paddingRight: clampPixelValue(sectionStyle && sectionStyle.paddingRight, 0, 20, ''),
+          paddingBottom: clampPixelValue(sectionStyle && sectionStyle.paddingBottom, 0, 18, ''),
+          paddingLeft: clampPixelValue(sectionStyle && sectionStyle.paddingLeft, 0, 20, ''),
+        });
+        if (sectionStyle && (sectionStyle.display === 'grid' || (sectionStyle.display === 'flex' && (sectionStyle.flexDirection || 'row').indexOf('column') === 0))) {
+          setStyles(section, {
+            gap: clampPixelValue(trimString(sectionStyle.rowGap) || trimString(sectionStyle.gap), 0, 14, ''),
+          });
+        }
+      }
+
+      if (sectionIndex === 0 && sectionChildren.length >= 2 && !mediaNodes.length) {
+        setStyles(section, {
+          width: '100%',
+          maxWidth: '100%',
+          textAlign: 'center',
+          boxSizing: 'border-box',
+        });
+        if (sectionStyle.display !== 'grid') {
+          setStyles(section, {
+            display: 'grid',
+            justifyItems: 'center',
+            alignContent: 'start',
+            gap: trimString(sectionStyle.rowGap) || trimString(sectionStyle.gap) || '6px',
+          });
+        } else {
+          setStyles(section, {
+            justifyItems: 'center',
+          });
+        }
+        sectionChildren.forEach(function (child) {
+          var childStyle = getComputedStyleSafe(child);
+          if (!child || child.nodeType !== 1) {
+            return;
+          }
+          setStyles(child, {
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: '0',
+            textAlign: 'center',
+            marginLeft: 'auto',
+            marginRight: 'auto',
+            justifySelf: 'stretch',
+            boxSizing: 'border-box',
+          });
+          if (childStyle && (childStyle.display === 'inline' || childStyle.display === 'inline-block')) {
+            setStyles(child, {
+              display: 'block',
+            });
+          }
+        });
+      }
+
+      if (mediaNodes.length === 1 && sectionChildren.length >= 2 && sectionChildren.length <= 4) {
+        sectionChildren.forEach(function (child) {
+          var childStyle;
+          if (!child || child.nodeType !== 1) {
+            return;
+          }
+          childStyle = getComputedStyleSafe(child);
+          if (!childStyle || isOutOfFlowStyle(childStyle)) {
+            return;
+          }
+          if (!child.querySelector('img, canvas, svg, video') && trimString(child.textContent)) {
+            if (!firstTextChild) {
+              firstTextChild = child;
+            }
+            lastTextChild = child;
+          }
+        });
+
+        setStyles(section, {
+          width: '100%',
+          maxWidth: '100%',
+          minWidth: '0',
+          boxSizing: 'border-box',
+        });
+
+        if (firstTextChild) {
+          setStyles(firstTextChild, {
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: '0',
+            display: 'grid',
+            justifyItems: 'center',
+            textAlign: 'center',
+            boxSizing: 'border-box',
+          });
+        }
+
+        if (lastTextChild && lastTextChild !== firstTextChild) {
+          setStyles(lastTextChild, {
+            width: '100%',
+            maxWidth: '100%',
+            minWidth: '0',
+            textAlign: 'center',
+            boxSizing: 'border-box',
+          });
+        }
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterContentColumns = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !(rootWidth > 0) || !card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article, li'), function (row) {
+      var rowStyle = getComputedStyleSafe(row);
+      var children;
+      var leading;
+      var content;
+      var leadingStyle;
+      var contentStyle;
+      var rowWidth;
+      var leadingWidth;
+      var contentWidth;
+      var gapPx;
+      var availableContentWidth;
+      var contentChildren;
+      if (!rowStyle || rowStyle.display !== 'flex' || (rowStyle.flexDirection || 'row').indexOf('column') === 0 || isOutOfFlowStyle(rowStyle)) {
+        return;
+      }
+      if (rowStyle.justifyContent === 'center' || rowStyle.justifyContent === 'space-between') {
+        return;
+      }
+      children = getElementChildren(row).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle && !isOutOfFlowStyle(childStyle);
+      });
+      if (children.length < 2 || children.length > 3) {
+        return;
+      }
+
+      leading = children[0];
+      content = children[1];
+      leadingStyle = getComputedStyleSafe(leading);
+      contentStyle = getComputedStyleSafe(content);
+      if (!leadingStyle || !contentStyle) {
+        return;
+      }
+      if (!(contentStyle.display === 'block' || contentStyle.display === 'grid' || (contentStyle.display === 'flex' && (contentStyle.flexDirection || 'row').indexOf('column') === 0))) {
+        return;
+      }
+      if (!normalizeTextContent(content.textContent) || normalizeTextContent(content.textContent).length > 80) {
+        return;
+      }
+
+      rowWidth = getRenderTargetSize(row, null).width;
+      leadingWidth = getRenderTargetSize(leading, null).width;
+      contentWidth = getRenderTargetSize(content, null).width;
+      if (!(rowWidth > 0) || !(leadingWidth > 0) || !(contentWidth > 0)) {
+        return;
+      }
+      if (rowWidth < Math.min(rootWidth * 0.28, 180) || rowWidth > rootWidth * 0.7) {
+        return;
+      }
+      if (leadingWidth > Math.min(72, rowWidth * 0.28) || contentWidth >= rowWidth * 0.72) {
+        return;
+      }
+
+      gapPx = toPixelValue(trimString(rowStyle.columnGap) || trimString(rowStyle.gap)) || 0;
+      availableContentWidth = rowWidth
+        - (toPixelValue(rowStyle.paddingLeft) || 0)
+        - (toPixelValue(rowStyle.paddingRight) || 0)
+        - leadingWidth
+        - gapPx;
+      if (!(availableContentWidth > contentWidth + 24)) {
+        return;
+      }
+
+      setStyles(content, {
+        flex: '1 1 0',
+        width: 'auto',
+        minWidth: '0',
+        maxWidth: 'none',
+        alignSelf: 'stretch',
+        boxSizing: 'border-box',
+      });
+      if (contentStyle.display === 'flex' && (contentStyle.flexDirection || 'row').indexOf('column') === 0) {
+        setStyles(content, {
+          alignItems: 'stretch',
+        });
+      }
+
+      contentChildren = getElementChildren(content);
+      contentChildren.forEach(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        if (!childStyle || isOutOfFlowStyle(childStyle) || !normalizeTextContent(child.textContent)) {
+          return;
+        }
+        setStyles(child, {
+          width: 'auto',
+          minWidth: '0',
+          maxWidth: '100%',
+          boxSizing: 'border-box',
+        });
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterCompactPanels = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !(rootWidth > 0) || !card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article, li'), function (panel) {
+      var panelStyle = getComputedStyleSafe(panel);
+      var panelWidth;
+      var panelHeight;
+      var panelText;
+      var panelChildren;
+      var gapValue;
+      var isBoxLike;
+      var isHorizontalPanel;
+      var isLeafInlineTextPanel;
+      if (!panelStyle || isOutOfFlowStyle(panelStyle)) {
+        return;
+      }
+      panelWidth = getRenderTargetSize(panel, null).width;
+      panelHeight = getRenderTargetSize(panel, null).height;
+      panelText = normalizeTextContent(panel.textContent);
+      panelChildren = getElementChildren(panel);
+      if (!(panelWidth > 0) || !(panelHeight > 0) || !panelText || panelText.length > 72) {
+        return;
+      }
+      if (panelWidth < 72 || panelWidth > rootWidth * 0.58 || panelHeight < 32 || panelHeight > 160) {
+        return;
+      }
+      if (hasLikelyQrDescendant(panel) || (panel.querySelector && panel.querySelector('img, canvas, video'))) {
+        return;
+      }
+      isBoxLike = panelStyle.borderTopStyle !== 'none'
+        || panelStyle.borderBottomStyle !== 'none'
+        || panelStyle.boxShadow !== 'none'
+        || toPixelValue(panelStyle.borderRadius) >= 8;
+      if (!isBoxLike) {
+        return;
+      }
+
+      gapValue = trimString(panelStyle.rowGap) || trimString(panelStyle.columnGap) || trimString(panelStyle.gap) || '8px';
+      isHorizontalPanel = panelStyle.display === 'flex'
+        && (panelStyle.flexDirection || 'row').indexOf('column') !== 0
+        && panelChildren.length >= 2
+        && panelChildren.length <= 3;
+      isLeafInlineTextPanel = isHorizontalPanel && panelChildren.every(function (child) {
+        return getElementChildren(child).length === 0 && normalizeTextContent(child.textContent).length <= 12;
+      });
+      if (isHorizontalPanel) {
+        setStyles(panel, {
+          display: 'flex',
+          flexDirection: 'row',
+          flexWrap: 'nowrap',
+          justifyContent: 'center',
+          alignItems: 'center',
+          textAlign: 'center',
+          gap: clampPixelValue(gapValue, 6, 10, '8px'),
+        });
+      } else if (panelStyle.display === 'flex' && (panelStyle.flexDirection || 'row').indexOf('column') === 0) {
+        setStyles(panel, {
+          alignItems: 'center',
+          textAlign: 'center',
+        });
+      } else if (panelStyle.display === 'grid') {
+        setStyles(panel, {
+          justifyItems: 'center',
+          textAlign: 'center',
+        });
+      } else {
+        setStyles(panel, {
+          textAlign: 'center',
+        });
+      }
+
+      panelChildren.forEach(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        var childWidth;
+        var childText;
+        var childChildren;
+        var isCompactLeadingChild;
+        var childFontSize;
+        if (!childStyle || isOutOfFlowStyle(childStyle)) {
+          return;
+        }
+        childWidth = getRenderTargetSize(child, null).width;
+        childText = normalizeTextContent(child.textContent);
+        childChildren = getElementChildren(child);
+        isCompactLeadingChild = isHorizontalPanel
+          && child === panelChildren[0]
+          && childWidth > 0
+          && childWidth <= Math.min(72, panelWidth * 0.32);
+        setStyles(child, {
+          minWidth: '0',
+          maxWidth: '100%',
+          textAlign: 'center',
+          boxSizing: 'border-box',
+        });
+        if (isCompactLeadingChild) {
+          setStyles(child, {
+            width: 'auto',
+            flex: '0 0 auto',
+            marginLeft: '0',
+            marginRight: '0',
+          });
+        } else if (isLeafInlineTextPanel && childText) {
+          setStyles(child, {
+            width: 'auto',
+            flex: '0 0 auto',
+            marginLeft: '0',
+            marginRight: '0',
+          });
+        } else if (isHorizontalPanel && (childText || childChildren.length)) {
+          setStyles(child, {
+            width: 'auto',
+            flex: '1 1 0',
+            marginLeft: '0',
+            marginRight: '0',
+          });
+        } else if (childWidth > 0 && childWidth <= 72 && childText.length <= 4) {
+          setStyles(child, {
+            width: 'auto',
+            justifySelf: 'center',
+          });
+        } else if (childText || childChildren.length) {
+          setStyles(child, {
+            width: '100%',
+          });
+        }
+        if (childStyle.display === 'flex' && (childStyle.flexDirection || 'row').indexOf('column') === 0) {
+          setStyles(child, {
+            alignItems: isHorizontalPanel ? 'stretch' : 'center',
+            justifyContent: 'center',
+          });
+        } else if (childStyle.display === 'flex') {
+          setStyles(child, {
+            justifyContent: 'center',
+            alignItems: 'center',
+          });
+        } else if (childStyle.display === 'grid') {
+          setStyles(child, {
+            justifyItems: 'center',
+          });
+        } else if (childChildren.length && childStyle.display !== 'block') {
+          setStyles(child, {
+            display: 'grid',
+            justifyItems: 'center',
+            gap: trimString(childStyle.rowGap) || trimString(childStyle.gap) || '4px',
+          });
+        }
+        childFontSize = toPixelValue(childStyle.fontSize);
+        if (childText && childText.length <= 10 && /^[\d.%\-+/↓↑]+$/.test(childText) && childFontSize > 0 && childFontSize < 20) {
+          setStyles(child, {
+            fontSize: '20px',
+            lineHeight: '1.2',
+          });
+        }
+
+        childChildren.forEach(function (grandchild) {
+          var grandchildStyle = getComputedStyleSafe(grandchild);
+          var grandchildText;
+          var grandchildFontSize;
+          if (!grandchildStyle || isOutOfFlowStyle(grandchildStyle)) {
+            return;
+          }
+          grandchildText = normalizeTextContent(grandchild.textContent);
+          setStyles(grandchild, {
+            minWidth: '0',
+            maxWidth: '100%',
+            textAlign: 'center',
+            boxSizing: 'border-box',
+          });
+          if (isHorizontalPanel && childStyle.display === 'flex' && (childStyle.flexDirection || 'row').indexOf('column') === 0) {
+            setStyles(grandchild, {
+              width: '100%',
+            });
+          }
+          grandchildFontSize = toPixelValue(grandchildStyle.fontSize);
+          if (grandchildText && grandchildText.length <= 10 && /^[\d.%\-+/↓↑]+$/.test(grandchildText) && grandchildFontSize > 0 && grandchildFontSize < 20) {
+            setStyles(grandchild, {
+              fontSize: '20px',
+              lineHeight: '1.2',
+            });
+          }
+        });
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterStructuredChildren = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !card || !card.children || !(rootWidth > 0)) {
+      return;
+    }
+
+    getElementChildren(card).forEach(function (child) {
+      var style = getComputedStyleSafe(child);
+      var childWidth;
+      if (!style || isOutOfFlowStyle(style) || !(child.querySelector && child.querySelector('div, section, article, ul, ol, img, canvas, svg, video'))) {
+        return;
+      }
+      childWidth = getRenderTargetSize(child, null).width;
+      if (!(childWidth > 0) || childWidth >= rootWidth * 0.9) {
+        return;
+      }
+      setStyles(child, {
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: '0',
+        justifySelf: 'stretch',
+        marginLeft: '0',
+        marginRight: '0',
+        boxSizing: 'border-box',
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterNestedStructuredBlocks = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !card || !card.querySelectorAll || !(rootWidth > 0)) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, section, article, header, footer, nav, aside'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var parent = node && node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null;
+      var parentStyle = getComputedStyleSafe(parent);
+      var children;
+      var nodeWidth;
+      var parentWidth;
+      var nodeText;
+      var freeSpace;
+      var display;
+      var hasNestedStructuredContent;
+      if (!style || !parentStyle || isOutOfFlowStyle(style) || isOutOfFlowStyle(parentStyle) || node === card) {
+        return;
+      }
+      display = trimString(style.display);
+      if (display === 'inline' || display === 'inline-block' || display === 'contents' || display === 'table-row' || display === 'table-cell') {
+        return;
+      }
+      if (parentStyle.display === 'flex' && (parentStyle.flexDirection || 'row').indexOf('column') !== 0) {
+        return;
+      }
+      if (hasLikelyQrDescendant(node) || (node.querySelector && node.querySelector('img, canvas, video'))) {
+        return;
+      }
+      children = getElementChildren(node).filter(function (child) {
+        var childStyle = getComputedStyleSafe(child);
+        return !!childStyle && !isOutOfFlowStyle(childStyle);
+      });
+      nodeText = normalizeTextContent(node.textContent);
+      hasNestedStructuredContent = !!(node.querySelector && node.querySelector('div, section, article, ul, ol, p, h1, h2, h3, h4, h5, h6'));
+      if (children.length < 2 && !hasNestedStructuredContent) {
+        return;
+      }
+      if (!nodeText || nodeText.length > 240) {
+        return;
+      }
+      nodeWidth = getRenderTargetSize(node, null).width;
+      parentWidth = getRenderTargetSize(parent, null).width;
+      freeSpace = parentWidth - nodeWidth;
+      if (!(nodeWidth > 0) || !(parentWidth > 0) || parentWidth > rootWidth * 0.96) {
+        return;
+      }
+      if (nodeWidth >= parentWidth * 0.86 || freeSpace < Math.max(32, parentWidth * 0.1)) {
+        return;
+      }
+      if (parentWidth < Math.min(rootWidth * 0.36, 220)) {
+        return;
+      }
+
+      setStyles(node, {
+        width: '100%',
+        maxWidth: '100%',
+        minWidth: '0',
+        marginLeft: '0',
+        marginRight: '0',
+        boxSizing: 'border-box',
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterSpacing = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !card || !card.children || !(rootWidth > 0)) {
+      return;
+    }
+
+    function walk(node, depth) {
+      var style;
+      var display;
+      var children;
+      var fontSize;
+      var lineHeight;
+      var text;
+      var paddingLimit;
+      var sidePaddingLimit;
+      var marginLimit;
+      var gapLimit;
+      if (!node || node.nodeType !== 1) {
+        return;
+      }
+      style = getComputedStyleSafe(node);
+      if (!style || isOutOfFlowStyle(style)) {
+        return;
+      }
+      display = trimString(style.display);
+      children = getElementChildren(node);
+      text = trimString(node.textContent);
+      paddingLimit = depth <= 1 ? 16 : 12;
+      sidePaddingLimit = depth <= 1 ? 18 : 14;
+      marginLimit = depth <= 1 ? 16 : 12;
+      gapLimit = depth <= 1 ? 14 : 12;
+
+      if (node !== card && display !== 'inline' && display !== 'contents' && display !== 'table-row') {
+        setStyles(node, {
+          paddingTop: clampPixelValue(style.paddingTop, 0, paddingLimit, ''),
+          paddingRight: clampPixelValue(style.paddingRight, 0, sidePaddingLimit, ''),
+          paddingBottom: clampPixelValue(style.paddingBottom, 0, paddingLimit, ''),
+          paddingLeft: clampPixelValue(style.paddingLeft, 0, sidePaddingLimit, ''),
+          marginTop: clampPixelValue(style.marginTop, 0, marginLimit, ''),
+          marginBottom: clampPixelValue(style.marginBottom, 0, marginLimit, ''),
+        });
+        if (display === 'grid' || display === 'flex') {
+          setStyles(node, {
+            gap: clampPixelValue(trimString(style.rowGap) || trimString(style.columnGap) || trimString(style.gap), 0, gapLimit, ''),
+          });
+        }
+      }
+
+      if (text && text.length <= 160) {
+        fontSize = toPixelValue(style.fontSize);
+        lineHeight = toPixelValue(style.lineHeight);
+        if (fontSize > 0 && lineHeight > fontSize * 1.7) {
+          setStyles(node, {
+            lineHeight: '1.45',
+          });
+        }
+      }
+
+      children.forEach(function (child) {
+        walk(child, depth + 1);
+      });
+    }
+
+    walk(card, 0);
+  };
+
+  RuntimeShare.prototype._normalizePosterTypography = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !card || !card.querySelectorAll || !(rootWidth > 0)) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, p, span, strong, b, small, label, li, h1, h2, h3, h4, h5, h6'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var parent = node && node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null;
+      var parentStyle = getComputedStyleSafe(parent);
+      var parentChildren = getElementChildren(parent);
+      var text = trimString(node.textContent);
+      var fontSize;
+      var nextFontSize = 0;
+      var parentWidth = 0;
+      var isCompactMetricLabel = false;
+      if (!style || isOutOfFlowStyle(style) || !text || text.length > 160) {
+        return;
+      }
+      fontSize = toPixelValue(style.fontSize);
+      if (!(fontSize > 0) || fontSize >= 16.5) {
+        return;
+      }
+      if (parent && parentStyle && !isOutOfFlowStyle(parentStyle)) {
+        parentWidth = getRenderTargetSize(parent, null).width;
+        isCompactMetricLabel = parentChildren.length === 2
+          && node === parentChildren[parentChildren.length - 1]
+          && !(parent.querySelector && parent.querySelector('img, canvas, svg, video'))
+          && parentWidth > 0
+          && parentWidth <= Math.min(rootWidth * 0.4, 220)
+          && text.length <= 8;
+      }
+      if (isCompactMetricLabel) {
+        nextFontSize = Math.max(fontSize, 13);
+        nextFontSize = Math.min(nextFontSize, 14);
+      } else if (fontSize < 12.5) {
+        nextFontSize = 15;
+      } else if (fontSize < 14.5) {
+        nextFontSize = 16.5;
+      } else {
+        nextFontSize = 18;
+      }
+      if (nextFontSize > fontSize) {
+        setStyles(node, isCompactMetricLabel ? {
+          fontSize: nextFontSize + 'px',
+          width: '100%',
+          textAlign: 'center',
+        } : {
+          fontSize: nextFontSize + 'px',
+        });
+      }
+      if (!trimString(style.lineHeight) || style.lineHeight === 'normal' || toPixelValue(style.lineHeight) < nextFontSize * 1.3) {
+        setStyles(node, {
+          lineHeight: isCompactMetricLabel ? '1.25' : '1.4',
+        });
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterTightTextCells = function (card, context) {
+    var layout = getContextLayout(context);
+    var rootWidth = getRenderTargetSize(card, null).width;
+    if (layout !== 'portrait' || !card || !card.querySelectorAll || !(rootWidth > 0)) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('div, span, strong, b, small, label'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var parent = node && node.parentNode && node.parentNode.nodeType === 1 ? node.parentNode : null;
+      var parentStyle = getComputedStyleSafe(parent);
+      var text = trimString(node.textContent);
+      var fontSize;
+      var nodeWidth;
+      var parentWidth;
+      var nextFontSize;
+      if (!style || !parent || !parentStyle || isOutOfFlowStyle(style) || isOutOfFlowStyle(parentStyle) || !text || text.length > 32) {
+        return;
+      }
+      if (node.querySelector('img, canvas, svg, video') || hasLikelyQrDescendant(node)) {
+        return;
+      }
+      fontSize = toPixelValue(style.fontSize);
+      if (!(fontSize > 0)) {
+        return;
+      }
+      nodeWidth = getRenderTargetSize(node, null).width;
+      parentWidth = getRenderTargetSize(parent, null).width;
+      if (!(nodeWidth > 0) || !(parentWidth > 0) || parentWidth > Math.min(rootWidth * 0.3, 180)) {
+        return;
+      }
+      if (!(nodeWidth > parentWidth + 1 || (node.scrollWidth || 0) > (node.clientWidth || 0) + 1)) {
+        return;
+      }
+      nextFontSize = Math.max(12, Math.min(fontSize - 2, /\d{4,}|[%/]/.test(text) ? 15 : 14));
+      if (nextFontSize < fontSize) {
+        setStyles(node, {
+          fontSize: nextFontSize + 'px',
+          lineHeight: '1.25',
+        });
+      }
+      setStyles(parent, {
+        paddingLeft: clampPixelValue(parentStyle.paddingLeft, 8, 12, ''),
+        paddingRight: clampPixelValue(parentStyle.paddingRight, 8, 12, ''),
+        minWidth: '0',
+      });
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterMedia = function (card) {
+    if (!card || !card.querySelectorAll) {
+      return;
+    }
+
+    Array.prototype.forEach.call(card.querySelectorAll('img, canvas, svg, video'), function (node) {
+      var style = getComputedStyleSafe(node);
+      var parent;
+      var parentWidth;
+      var mediaWidth;
+      if (!style || isOutOfFlowStyle(style)) {
+        return;
+      }
+      parent = node.parentNode;
+      if (!parent || parent.nodeType !== 1) {
+        return;
+      }
+      parentWidth = getRenderTargetSize(parent, null).width;
+      mediaWidth = getRenderTargetSize(node, null).width;
+      if (!(parentWidth > 0) || !(mediaWidth > 0)) {
+        return;
+      }
+      if (isLikelyQrMedia(node, parent, mediaWidth, getRenderTargetSize(node, null).height)) {
+        setStyles(node, {
+          borderRadius: '0',
+          imageRendering: 'pixelated',
+        });
+      }
+      if (mediaWidth < parentWidth * 0.97) {
+        setStyles(node, {
+          display: 'block',
+          marginLeft: 'auto',
+          marginRight: 'auto',
+        });
+      }
+      if (!trimString(style.objectPosition) || style.objectPosition !== 'center center') {
+        setStyles(node, {
+          objectPosition: 'center center',
+        });
+      }
+    });
+  };
+
+  RuntimeShare.prototype._normalizePosterCard = function (card, context) {
+    if (!card || card.nodeType !== 1) {
+      return card;
+    }
+    this._dedupePosterTitleIcon(card, context);
+    this._dedupePosterFragments(card);
+    this._collapsePosterEmptyNodes(card);
+    this._normalizePosterBlocks(card, context);
+    this._normalizePosterHeaderPanels(card);
+    this._normalizePosterHeaderGradientTitles(card);
+    this._normalizePosterMetricRows(card);
+    this._normalizePosterWideGrids(card, context);
+    this._normalizePosterThemeSurfaces(card, context);
+    this._normalizePosterPrimarySections(card, context);
+    this._normalizePosterContentColumns(card, context);
+    this._normalizePosterCompactPanels(card, context);
+    this._normalizePosterStructuredChildren(card, context);
+    this._normalizePosterNestedStructuredBlocks(card, context);
+    this._normalizePosterSpacing(card, context);
+    this._normalizePosterTypography(card, context);
+    this._normalizePosterTightTextCells(card, context);
+    this._normalizePosterMedia(card);
+    this._normalizePosterStatsFragments(card, context);
+    return card;
+  };
+
+  RuntimeShare.prototype._renderCardToImage = async function (card, context) {
+    var html2canvas = await this._ensureHtml2canvasReady(context);
+    var cardOptions = this.options.card || {};
+    var imageType = context.imageType || normalizeImageType(this.options.capture.imageType);
+    var imageQuality = normalizeImageQuality(context.imageQuality, imageType, this.options.capture.imageQuality);
+
+    this._stage.innerHTML = '';
+    this._stage.appendChild(card);
+    this._normalizePosterCard(card, context);
+
+    var renderOptions = {
+      backgroundColor: null,
+      scale: resolveValue(cardOptions.renderScale, context, Math.max(2, Math.min(global.devicePixelRatio || 1, 3))),
+      useCORS: true,
+      allowTaint: false,
+      logging: false,
+    };
+    var renderSize = getRenderTargetSize(card, renderOptions);
+    renderOptions.scale = resolveRenderScale(
+      renderOptions.scale,
+      context,
+      2,
+      renderSize.width,
+      renderSize.height,
+      resolveValue(cardOptions.renderMaxPixels, context, 5200000)
+    );
+    var canvas = await html2canvas(card, renderOptions);
+    this._stage.innerHTML = '';
+    return canvas.toDataURL(imageType, imageQuality);
+  };
+
+  RuntimeShare.prototype.open = async function (context) {
+    this._ensureStructure();
+    this._context = buildContext(this, context);
+    this._setOpenState(true);
+    this._setLoading(this._getText('loading', this._context, 'Generating share image...'));
+
+    try {
+      await this._runHook('beforeOpen', [this._context]);
+      await this._ensureRuntimeDependencies(this._context);
+      var card = await this._buildCard(this._context, '');
+      var imageDataUrl = await this._renderCardToImage(card, this._context);
+      this._showResult(imageDataUrl, this._context);
+      await this._runHook('afterOpen', [this._context, imageDataUrl]);
+      return imageDataUrl;
+    } catch (error) {
+      if (typeof this.options.onError === 'function') {
+        this.options.onError(error, this._context);
+      }
+      this._showError(error);
+      throw error;
+    }
+  };
+
+  RuntimeShare.prototype.close = function () {
+    this._setOpenState(false);
+  };
+
+  RuntimeShare.prototype.download = function () {
+    ensure(this._imageDataUrl, 'NO_SHARE_IMAGE', this._getText('errorNoShareImage', this._context || { locale: this._defaultLocale }, 'No share image is available yet.'));
+    var link = createElement('a');
+    var imageType = this._context && this._context.imageType ? this._context.imageType : normalizeImageType(this.options.capture.imageType);
+    var fileName = sanitizeFileName(this._context && this._context.fileName ? this._context.fileName : (this._context && this._context.pageTitle ? this._context.pageTitle : 'share-image')) + getImageExtension(imageType);
+    link.href = this._imageDataUrl;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return fileName;
+  };
+
+  RuntimeShare.prototype.copyLink = async function () {
+    var copied = await copyText(this._buildCopyText(this._context));
+    if (copied) {
+      this._hintNode.textContent = this._getText('copySuccess', this._context || { locale: this._defaultLocale }, 'Share copy copied. You can send it directly.');
+    } else {
+      this._hintNode.textContent = this._getText('copyFailed', this._context || { locale: this._defaultLocale }, 'Copy failed. Please copy the page URL manually.');
+    }
+    return copied;
+  };
+
+  RuntimeShare.prototype.regenerate = function () {
+    return this.open(this._context || {});
+  };
+
+  RuntimeShare.prototype.updateOptions = function (nextOptions) {
+    var options = isPlainObject(nextOptions) ? nextOptions : {};
+    var nextLocale = options.locale;
+    if (nextLocale === undefined) nextLocale = options.language;
+    if (nextLocale === undefined) nextLocale = options.lang;
+    if (nextLocale !== undefined) {
+      this._defaultLocale = resolveLocale(nextLocale, true, DEFAULT_LOCALE);
+      this.options.locale = this._defaultLocale;
+    }
+    this.options.text = mergeSection(this.options.text, options.text);
+    this.options.messages = mergeNestedSections(this.options.messages, options.messages);
+    this.options.modal = mergeSection(this.options.modal, options.modal);
+    this.options.capture = mergeSection(this.options.capture, options.capture);
+    this.options.card = mergeSection(this.options.card, options.card);
+    this.options.qr = mergeSection(this.options.qr, options.qr);
+    this.options.summary = mergeSection(this.options.summary, options.summary);
+    this.options.actions = mergeSection(this.options.actions, options.actions);
+    this.options.styles = mergeNestedSections(this.options.styles, options.styles);
+    this.options.classNames = mergeSection(this.options.classNames, options.classNames);
+    this.options.renderers = mergeSection(this.options.renderers, options.renderers);
+    if (typeof options.onError === 'function') this.options.onError = options.onError;
+    if (typeof options.beforeOpen === 'function') this.options.beforeOpen = options.beforeOpen;
+    if (typeof options.afterOpen === 'function') this.options.afterOpen = options.afterOpen;
+    this._syncStructureStyles();
+    this._refreshActionLabels(this._context || { locale: this._defaultLocale, pageTitle: trimString(document.title) || 'Share View' });
+    return this;
+  };
+
+  RuntimeShare.getDefaultInstance = function () {
+    if (!(RuntimeShare._defaultInstance instanceof RuntimeShare)) {
+      RuntimeShare._defaultInstance = new RuntimeShare();
+    }
+    return RuntimeShare._defaultInstance;
+  };
+
+  var STATIC_COMPAT_METHODS = [
+    'open',
+    'close',
+    'download',
+    'copyLink',
+    'regenerate',
+    'updateOptions',
+  ];
+
+  function attachStaticCompatMethod(methodName) {
+    RuntimeShare[methodName] = function () {
+      var share = RuntimeShare.getDefaultInstance();
+      return share[methodName].apply(share, arguments);
+    };
+  }
+
+  for (var i = 0; i < STATIC_COMPAT_METHODS.length; i += 1) {
+    attachStaticCompatMethod(STATIC_COMPAT_METHODS[i]);
+  }
+
+  global.RuntimeShare = RuntimeShare;
+})(window);

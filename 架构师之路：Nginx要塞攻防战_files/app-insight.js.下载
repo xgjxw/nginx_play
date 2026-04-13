@@ -1,0 +1,1497 @@
+/* App Insight Frontend SDK v2.1.0 */
+var AppInsight = (function () {
+  'use strict';
+
+  /**
+   * 默认封面图库 (SVG 格式)
+   * 设计比例：16:9 (670x377)
+   */
+
+  const svgToDataURI = (svgString) => {
+    const encoded = encodeURIComponent(svgString.replace(/\n/g, '').replace(/\s+/g, ' '));
+    return `data:image/svg+xml;charset=utf-8,${encoded}`
+  };
+
+  const techBlue = `
+<svg width="670" height="377" viewBox="0 0 670 377" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#E3F2FD;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#BBDEFB;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#2196F3;stop-opacity:0.1" />
+      <stop offset="100%" style="stop-color:#2196F3;stop-opacity:0" />
+    </linearGradient>
+  </defs>
+  <rect width="670" height="377" fill="url(#grad1)"/>
+  <path d="M0 200 C 200 100, 400 300, 670 150 L 670 377 L 0 377 Z" fill="url(#grad2)"/>
+  <circle cx="600" cy="80" r="40" fill="#2196F3" opacity="0.05"/>
+  <circle cx="50" cy="300" r="80" fill="#2196F3" opacity="0.05"/>
+</svg>`;
+
+  const warmSun = `
+<svg width="670" height="377" viewBox="0 0 670 377" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gradSun" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFF3E0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#FFE0B2;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="670" height="377" fill="url(#gradSun)"/>
+  <circle cx="335" cy="400" r="200" fill="#FF9800" opacity="0.1"/>
+  <circle cx="335" cy="400" r="300" fill="#FF9800" opacity="0.05"/>
+  <circle cx="580" cy="60" r="30" fill="#FF9800" opacity="0.1"/>
+</svg>`;
+
+  const minimalGeo = `
+<svg width="670" height="377" viewBox="0 0 670 377" xmlns="http://www.w3.org/2000/svg">
+  <rect width="670" height="377" fill="#F5F5F7"/>
+  <rect x="50" y="50" width="100" height="100" rx="20" fill="#B0BEC5" opacity="0.1"/>
+  <rect x="500" y="200" width="120" height="120" rx="60" fill="#B0BEC5" opacity="0.1"/>
+  <rect x="250" y="100" width="60" height="60" rx="10" transform="rotate(45 280 130)" fill="#B0BEC5" opacity="0.1"/>
+</svg>`;
+
+  const creativeBlob = `
+<svg width="670" height="377" viewBox="0 0 670 377" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gradBlob" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#F3E5F5;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#E1BEE7;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="670" height="377" fill="url(#gradBlob)"/>
+  <path d="M550 50 Q 650 0, 670 100 T 600 200 T 500 100 Z" fill="#9C27B0" opacity="0.05"/>
+  <path d="M100 300 Q 0 350, 50 250 T 150 200 T 200 300 Z" fill="#9C27B0" opacity="0.05"/>
+</svg>`;
+
+  const DefaultCovers = {
+    tech: svgToDataURI(techBlue),
+    warm: svgToDataURI(warmSun),
+    minimal: svgToDataURI(minimalGeo),
+    creative: svgToDataURI(creativeBlob),
+
+    getRandom: () => {
+      const keys = ['tech', 'warm', 'minimal', 'creative'];
+      const randomKey = keys[Math.floor(Math.random() * keys.length)];
+      return DefaultCovers[randomKey]
+    }
+  };
+
+  /**
+   * 海报模板渲染引擎
+   */
+
+  class PosterEngine {
+    constructor(template, data) {
+      this.data = JSON.parse(JSON.stringify(data));
+
+      if (!this.data.coverImage) {
+        this.data.coverImage = DefaultCovers.getRandom();
+      }
+
+      this.template = JSON.parse(JSON.stringify(template));
+      const replaceData = this.data;
+
+      const replaceVars = (obj) => {
+        if (typeof obj === 'string') {
+          return obj.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key) => {
+            return (replaceData[key] !== undefined && replaceData[key] !== null) ? replaceData[key] : ''
+          })
+        }
+        if (Array.isArray(obj)) return obj.map(replaceVars)
+        if (obj && typeof obj === 'object') {
+          const result = {};
+          for (const key in obj) result[key] = replaceVars(obj[key]);
+          return result
+        }
+        return obj
+      };
+
+      this.template = replaceVars(this.template);
+      this.template.elements = this.template.elements.filter(el => {
+        if (el.type === 'image' && !el.url) return false
+        if (el.type === 'text' && !el.text) return false
+        return true
+      });
+
+      const hasIcon = this.template.elements.some(el => el.type === 'image' && el.y < 150);
+      if (!hasIcon) {
+        this.template.elements.forEach(el => {
+          if (el.type === 'text' && el.y < 150 && el.x > 60) el.x = 40;
+        });
+      }
+    }
+
+    async render() {
+      const { width, padding = [0,0,0,0], backgroundColor, elements } = this.template;
+      const canvas = document.createElement('canvas');
+      const dpr = window.devicePixelRatio || 1;
+
+      const imagesMap = await this._preloadImages(elements);
+      const hasHeader = elements.some(el => el.position === 'absolute' && el.y && el.y < 150 && ((el.type === 'image' && el.url) || (el.type === 'text' && el.text)));
+
+      const measureCtx = canvas.getContext('2d');
+      let currentY = padding[0];
+      let hasContent = false;
+      let isFirstFlowElement = true;
+
+      elements.forEach(el => {
+        if (el.position === 'flow') {
+          if (isFirstFlowElement) {
+            if (!hasHeader && el.marginTop > 100) el.marginTop = 100;
+            isFirstFlowElement = false;
+          }
+          el.computedY = currentY + (el.marginTop || 0);
+          let elementHeight = el.height || 0;
+          if (el.type === 'text') {
+            elementHeight = this._measureTextHeight(measureCtx, el);
+            if (elementHeight > 0) hasContent = true;
+          }
+          if (el.type === 'image' && el.url) hasContent = true;
+          currentY = el.computedY + elementHeight;
+        }
+      });
+
+      if (!hasContent) currentY = padding[0] + 300;
+      let footerY = currentY + 60;
+      let finalHeight = this.template.height === 'auto' ? footerY + 180 + padding[2] : this.template.height;
+      const minHeight = width * 1.35;
+      const maxHeight = width * 2.2;
+
+      if (finalHeight < minHeight) {
+        finalHeight = minHeight;
+        if (this.template.height === 'auto') {
+          footerY = finalHeight - padding[2] - 180;
+        }
+      }
+      if (finalHeight > maxHeight) {
+        finalHeight = maxHeight;
+        if (this.template.height === 'auto') {
+          footerY = finalHeight - padding[2] - 180;
+        }
+      }
+
+      canvas.width = width * dpr;
+      canvas.height = finalHeight * dpr;
+      canvas.style.width = width + 'px';
+      canvas.style.height = finalHeight + 'px';
+
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      ctx.fillStyle = backgroundColor || '#FFFFFF';
+      ctx.fillRect(0, 0, width, finalHeight);
+
+      const cardEl = elements.find(el => el.type === 'rect' && el.height === 'auto');
+      if (cardEl) {
+        const rectHeight = footerY + 140 - cardEl.y;
+        ctx.save();
+        if (cardEl.shadow) {
+          ctx.shadowColor = cardEl.shadow.color;
+          ctx.shadowBlur = cardEl.shadow.blur;
+          ctx.shadowOffsetY = cardEl.shadow.offsetY;
+          ctx.shadowOffsetX = cardEl.shadow.offsetX || 0;
+        }
+        this._drawRoundRect(ctx, cardEl.x, cardEl.y, cardEl.width, rectHeight, cardEl.borderRadius);
+        ctx.fillStyle = cardEl.fill || '#fff';
+        ctx.fill();
+        ctx.restore();
+      }
+
+      for (const el of elements) {
+        if (el.type === 'rect' && el.height === 'auto') continue
+        let renderY = el.position === 'flow' ? el.computedY : el.y;
+        if (typeof renderY === 'string' && renderY.includes('footerY')) {
+          renderY = eval(renderY.replace('footerY', footerY));
+        }
+
+        ctx.save();
+        if (el.shadow) {
+          ctx.shadowColor = el.shadow.color;
+          ctx.shadowBlur = el.shadow.blur;
+          ctx.shadowOffsetY = el.shadow.offsetY;
+          ctx.shadowOffsetX = el.shadow.offsetX || 0;
+        }
+
+        switch (el.type) {
+          case 'rect':
+            this._drawRoundRect(ctx, el.x, renderY, el.width, el.height, el.borderRadius);
+            ctx.fillStyle = el.fill || '#fff';
+            ctx.fill();
+            break
+          case 'image':
+            const img = imagesMap[el.url];
+            if (img) {
+              this._drawRoundRect(ctx, el.x, renderY, el.width, el.height, el.borderRadius || 0);
+              ctx.clip();
+              ctx.drawImage(img, el.x, renderY, el.width, el.height);
+            }
+            break
+          case 'text':
+            this._drawText(ctx, el, el.x, renderY);
+            break
+        }
+        ctx.restore();
+      }
+
+      return canvas.toDataURL('image/png', 0.9)
+    }
+
+    async _preloadImages(elements) {
+      const map = {};
+      const promises = elements.filter(el => el.type === 'image' && el.url).map(el => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous';
+          img.onload = () => { map[el.url] = img; resolve(); };
+          img.onerror = () => resolve();
+          img.src = el.url;
+        })
+      });
+      await Promise.all(promises);
+      return map
+    }
+
+    _drawRoundRect(ctx, x, y, w, h, radius) {
+      ctx.beginPath();
+      if (!radius) {
+        ctx.rect(x, y, w, h);
+        return
+      }
+      const r = Array.isArray(radius) ? radius : [radius, radius, radius, radius];
+      ctx.moveTo(x + r[0], y);
+      ctx.lineTo(x + w - r[1], y);
+      ctx.arc(x + w - r[1], y + r[1], r[1], 1.5 * Math.PI, 2 * Math.PI);
+      ctx.lineTo(x + w, y + h - r[2]);
+      ctx.arc(x + w - r[2], y + h - r[2], r[2], 0, 0.5 * Math.PI);
+      ctx.lineTo(x + r[3], y + h);
+      ctx.arc(x + r[3], y + h - r[3], r[3], 0.5 * Math.PI, Math.PI);
+      ctx.lineTo(x, y + r[0]);
+      ctx.arc(x + r[0], y + r[0], r[0], Math.PI, 1.5 * Math.PI);
+      ctx.closePath();
+    }
+
+    _measureTextHeight(ctx, el) {
+      if (!el.text || !el.text.trim() || !el.width) return 0
+      ctx.font = `${el.fontWeight || 'normal'} ${el.fontSize}px sans-serif`;
+      const words = el.text.split('');
+      let line = '', lines = 1;
+      for (let i = 0; i < words.length; i++) {
+        const testLine = line + words[i];
+        if (ctx.measureText(testLine).width > el.width && i > 0) {
+          lines++;
+          line = words[i];
+          if (el.maxLines && lines > el.maxLines) {
+            lines = el.maxLines;
+            break
+          }
+        } else {
+          line = testLine;
+        }
+      }
+      return lines * (el.lineHeight || el.fontSize * 1.5)
+    }
+
+    _drawText(ctx, el, x, y) {
+      if (!el.text || !el.text.trim()) return
+      ctx.font = `${el.fontWeight || 'normal'} ${el.fontSize}px sans-serif`;
+      ctx.fillStyle = el.color || '#000';
+      ctx.textBaseline = 'top';
+      const words = el.text.split('');
+      let line = '', currentY = y, lineCount = 1;
+      for (let i = 0; i < words.length; i++) {
+        const testLine = line + words[i];
+        if (ctx.measureText(testLine).width > el.width && i > 0) {
+          if (el.maxLines && lineCount >= el.maxLines) {
+            let truncLine = line;
+            while (truncLine.length > 0 && ctx.measureText(truncLine + '...').width > el.width) {
+              truncLine = truncLine.slice(0, -1);
+            }
+            ctx.fillText(truncLine + '...', x, currentY);
+            return
+          }
+          ctx.fillText(line, x, currentY);
+          line = words[i];
+          currentY += el.lineHeight || el.fontSize * 1.5;
+          lineCount++;
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) ctx.fillText(line, x, currentY);
+    }
+  }
+
+  /**
+   * 二维码生成器
+   * 使用 qrcodejs 库（通过动态加载）
+   */
+
+  let qrcodeLib = null;
+
+  // 动态加载 qrcode 库
+  async function loadQRCodeLib() {
+    if (qrcodeLib) return qrcodeLib
+
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js';
+      script.onload = () => {
+        qrcodeLib = window.QRCode;
+        resolve(qrcodeLib);
+      };
+      script.onerror = reject;
+      document.head.appendChild(script);
+    })
+  }
+
+  /**
+   * 生成二维码
+   */
+  async function generateQRCode(text, size = 120) {
+    try {
+      await loadQRCodeLib();
+
+      const container = document.createElement('div');
+      container.style.display = 'none';
+      document.body.appendChild(container);
+
+      const qrcode = new window.QRCode(container, {
+        text: text,
+        width: size,
+        height: size,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: window.QRCode.CorrectLevel.M
+      });
+
+      // 等待生成完成
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      const canvas = container.querySelector('canvas');
+      const dataUrl = canvas.toDataURL('image/png');
+
+      document.body.removeChild(container);
+
+      return dataUrl
+    } catch (error) {
+      console.error('QR Code generation failed:', error);
+      // 降级方案：使用第三方 API
+      return `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(text)}`
+    }
+  }
+
+  /**
+   * 海报模板库
+   */
+
+  // 卡片样式模板
+  const cardStyle = {
+    templateId: 'card_style',
+    width: 750,
+    height: 'auto',
+    backgroundColor: '#F4F6F9',
+    padding: [60, 40, 60, 40],
+    elements: [
+      { type: 'rect', position: 'absolute', x: 40, y: 60, width: 670, height: 'auto', fill: '#FFFFFF', borderRadius: 24, shadow: { color: 'rgba(0,0,0,0.04)', blur: 24, offsetX: 0, offsetY: 8 } },
+      { type: 'image', position: 'absolute', x: 80, y: 100, width: 44, height: 44, borderRadius: 12, url: '{{appIcon}}' },
+      { type: 'text', position: 'absolute', x: 136, y: 106, text: '{{appName}}', fontSize: 26, fontWeight: 'normal', color: '#777777' },
+      { type: 'text', position: 'flow', marginTop: 130, x: 80, width: 590, text: '{{title}}', fontSize: 44, fontWeight: 'bold', lineHeight: 62, maxLines: 2, color: '#111111' },
+      { type: 'text', position: 'flow', marginTop: 24, x: 80, width: 590, text: '{{description}}', fontSize: 28, lineHeight: 46, maxLines: 3, color: '#666666' },
+      { type: 'image', position: 'flow', marginTop: 40, x: 80, width: 590, height: 332, borderRadius: 16, url: '{{coverImage}}' },
+      { type: 'rect', position: 'flow', marginTop: 60, x: 80, width: 590, height: 1, fill: '#F0F0F0' },
+      { type: 'image', position: 'absolute', x: 550, y: 'footerY', width: 120, height: 120, url: '{{qrCode}}' },
+      { type: 'text', position: 'absolute', x: 80, y: 'footerY + 24', text: '长按识别二维码', fontSize: 32, fontWeight: 'bold', color: '{{themeColor}}' },
+      { type: 'text', position: 'absolute', x: 80, y: 'footerY + 74', text: '立即体验精彩内容', fontSize: 24, color: '#999999' }
+    ]
+  };
+
+  // 全屏铺满模板
+  const fullBleedCard = {
+    templateId: 'full_bleed_card',
+    width: 750,
+    height: 'auto',
+    backgroundColor: '#FFFFFF',
+    padding: [0, 0, 0, 0],
+    elements: [
+      { type: 'image', position: 'absolute', x: 40, y: 50, width: 44, height: 44, borderRadius: 12, url: '{{appIcon}}' },
+      { type: 'text', position: 'absolute', x: 96, y: 56, text: '{{appName}}', fontSize: 26, fontWeight: 'normal', color: '#777777' },
+      { type: 'text', position: 'flow', marginTop: 140, x: 40, width: 670, text: '{{title}}', fontSize: 46, fontWeight: 'bold', lineHeight: 64, maxLines: 2, color: '#111111' },
+      { type: 'text', position: 'flow', marginTop: 24, x: 40, width: 670, text: '{{description}}', fontSize: 28, lineHeight: 46, maxLines: 3, color: '#666666' },
+      { type: 'image', position: 'flow', marginTop: 40, x: 40, width: 670, height: 377, borderRadius: 12, url: '{{coverImage}}' },
+      { type: 'rect', position: 'absolute', y: 'footerY - 40', x: 40, width: 670, height: 1, fill: '#EEEEEE' },
+      { type: 'image', position: 'absolute', x: 595, y: 'footerY', width: 110, height: 110, url: '{{qrCode}}' },
+      { type: 'text', position: 'absolute', x: 40, y: 'footerY + 20', text: '长按识别二维码', fontSize: 32, fontWeight: 'bold', color: '{{themeColor}}' },
+      { type: 'text', position: 'absolute', x: 40, y: 'footerY + 70', text: '立即体验精彩内容', fontSize: 24, color: '#999999' }
+    ]
+  };
+
+  const templates = {
+    card_style: cardStyle,
+    full_bleed: fullBleedCard
+  };
+
+  function createFeedbackWidget(sdk, options = {}) {
+    if (typeof document === 'undefined') return
+
+    const {
+      container = null,
+      position = 'bottom-right',
+      buttonText = '反馈',
+      placeholder = '请输入您的反馈...',
+      customStyles = true,
+      extraContext = {},
+      onSuccess = () => {},
+      onError = () => {}
+    } = options;
+
+    const isInline = !!container;
+    const widgetId = isInline ? `ai-feedback-${Date.now()}` : 'ai-feedback-widget';
+
+    if (!isInline && document.getElementById(widgetId)) return
+
+    if (customStyles && !document.getElementById('ai-feedback-styles')) {
+      const style = document.createElement('style');
+      style.id = 'ai-feedback-styles';
+      style.textContent = `
+      .ai-feedback-widget-fixed .ai-feedback-btn{position:fixed;${position.includes('right')?'right:20px':'left:20px'};${position.includes('bottom')?'bottom:76px':'top:20px'};z-index:9999}
+      .ai-feedback-btn{display:flex;align-items:center;justify-content:center;gap:6px;height:44px;padding:0 20px;border-radius:22px;border:none;font-size:14px;font-weight:500;cursor:pointer;letter-spacing:0.5px;transition:all .2s cubic-bezier(.25,.8,.25,1);background:rgba(244,245,247,.85);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);color:#333;border:1px solid rgba(255,255,255,.5);box-shadow:0 4px 12px -4px rgba(0,0,0,.08);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
+      .ai-feedback-btn:active{transform:scale(.94)}
+      .ai-feedback-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.4);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);z-index:10000;align-items:center;justify-content:center;padding:20px}
+      .ai-feedback-modal.show{display:flex}
+      .ai-feedback-box{width:100%;max-width:340px;background:#fff;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,.1);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif;animation:modalPopUp .3s cubic-bezier(.16,1,.3,1)}
+      .ai-feedback-header{display:flex;justify-content:space-between;align-items:center;padding:20px 24px 16px}
+      .ai-feedback-box h3{margin:0;font-size:17px;font-weight:600;color:#111}
+      .ai-feedback-close{background:none;border:none;padding:4px;cursor:pointer;display:flex;border-radius:4px;transition:background .2s}
+      .ai-feedback-close:hover{background:#F3F4F6}
+      .ai-feedback-body{padding:0 24px 20px;display:flex;flex-direction:column;gap:12px}
+      .ai-feedback-box textarea,.ai-feedback-box input{width:100%;box-sizing:border-box;background:#F7F8FA;border:1px solid transparent;border-radius:12px;padding:14px 16px;font-size:14px;color:#333;transition:all .2s ease;font-family:inherit;outline:none}
+      .ai-feedback-box textarea{height:120px;resize:none;line-height:1.5}
+      .ai-feedback-box textarea::placeholder,.ai-feedback-box input::placeholder{color:#A0AAB5}
+      .ai-feedback-box textarea:focus,.ai-feedback-box input:focus{background:#fff;border-color:#D1D5DB;box-shadow:0 0 0 3px rgba(17,17,17,.05)}
+      .ai-feedback-actions{display:flex;gap:12px;padding:0 24px 24px}
+      .ai-feedback-actions button{flex:1;height:44px;border-radius:22px;border:none;font-size:15px;font-weight:500;cursor:pointer;transition:all .2s ease;display:flex;align-items:center;justify-content:center}
+      .ai-feedback-actions button:active{transform:scale(.96)}
+      .ai-feedback-cancel{background:#F2F3F5;color:#4B5563}
+      .ai-feedback-submit{background:#111;color:#fff}
+      .ai-feedback-submit:disabled{opacity:0.6;cursor:not-allowed}
+      @keyframes modalPopUp{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+      @media (min-width:640px){
+        .ai-feedback-box{max-width:440px;border-radius:12px}
+        .ai-feedback-header{padding:24px 24px 16px}
+        .ai-feedback-body{padding:0 24px 24px;gap:16px}
+        .ai-feedback-box textarea{height:140px;border-radius:8px}
+        .ai-feedback-box input{border-radius:8px}
+        .ai-feedback-actions{padding:0 24px 24px;justify-content:flex-end}
+        .ai-feedback-actions button{flex:none;height:36px;padding:0 20px;border-radius:6px;font-size:14px}
+        .ai-feedback-cancel:hover{background:#E5E7EB}
+        .ai-feedback-submit:hover{background:#333}
+      }
+    `;
+      document.head.appendChild(style);
+    }
+
+    const html = `
+    <button class="ai-feedback-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
+      </svg>
+      ${buttonText}
+    </button>
+    <div class="ai-feedback-modal">
+      <div class="ai-feedback-box">
+        <div class="ai-feedback-header">
+          <h3>意见反馈</h3>
+          <button class="ai-feedback-close">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+        <div class="ai-feedback-body">
+          <textarea placeholder="${placeholder}"></textarea>
+          <input type="text" placeholder="联系方式（可选）">
+        </div>
+        <div class="ai-feedback-actions">
+          <button class="ai-feedback-cancel">取消</button>
+          <button class="ai-feedback-submit">提交反馈</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+    const wrapper = document.createElement('div');
+    wrapper.id = widgetId;
+    if (!isInline) wrapper.className = 'ai-feedback-widget-fixed';
+    wrapper.innerHTML = html;
+
+    if (isInline) {
+      const targetEl = typeof container === 'string' ? document.querySelector(container) : container;
+      if (targetEl) targetEl.appendChild(wrapper);
+    } else {
+      document.body.appendChild(wrapper);
+    }
+
+    const btn = wrapper.querySelector('.ai-feedback-btn');
+    const modal = wrapper.querySelector('.ai-feedback-modal');
+    const textarea = wrapper.querySelector('textarea');
+    const input = wrapper.querySelector('input');
+    const submitBtn = wrapper.querySelector('.ai-feedback-submit');
+    const cancelBtn = wrapper.querySelector('.ai-feedback-cancel');
+    const closeBtn = wrapper.querySelector('.ai-feedback-close');
+
+    btn.onclick = () => modal.classList.add('show');
+    cancelBtn.onclick = () => {
+      modal.classList.remove('show');
+      textarea.value = '';
+      input.value = '';
+    };
+    closeBtn.onclick = () => cancelBtn.click();
+    modal.onclick = (e) => e.target === modal && cancelBtn.click();
+
+    submitBtn.onclick = async () => {
+      const content = textarea.value.trim();
+      if (!content) return alert('请输入反馈内容')
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '提交中...';
+
+      try {
+        await sdk.submitFeedback(content, input.value.trim(), extraContext);
+        alert('感谢您的反馈！');
+        cancelBtn.click();
+        onSuccess();
+      } catch (error) {
+        alert('提交失败，请稍后重试');
+        onError(error);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '提交';
+      }
+    };
+
+    return wrapper
+  }
+
+  function createShareWidget(sdk, options = {}) {
+    if (typeof document === 'undefined') return
+
+    const {
+      container = null,
+      position = 'bottom-right',
+      buttonText = '分享',
+      title = document.title,
+      description = '快来看看这个应用！',
+      appName = '',
+      appIcon = '',
+      coverImage = '',
+      themeColor = '#667eea',
+      onShare = () => {}
+    } = options;
+
+    const isInline = !!container;
+    const widgetId = isInline ? `ai-share-${Date.now()}` : 'ai-share-widget';
+
+    if (!isInline && document.getElementById(widgetId)) return
+
+    if (!document.getElementById('ai-share-styles')) {
+      const style = document.createElement('style');
+      style.id = 'ai-share-styles';
+      style.textContent = `
+      .ai-share-widget-fixed .ai-share-btn{position:fixed;right:20px;bottom:20px;z-index:9999}
+      .ai-share-btn{display:flex;align-items:center;justify-content:center;gap:6px;height:44px;padding:0 20px;border-radius:22px;border:none;font-size:14px;font-weight:500;cursor:pointer;letter-spacing:0.5px;transition:all .2s cubic-bezier(.25,.8,.25,1);background:#111;color:#fff;box-shadow:0 6px 15px -4px rgba(0,0,0,.2);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",sans-serif}
+      .ai-share-btn:active{transform:scale(.94)}
+      .ai-share-modal{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:10000;align-items:center;justify-content:center}
+      .ai-share-modal.show{display:flex}
+      .ai-share-box{position:relative;background:#fff;border-radius:8px;padding:20px;width:90%;max-width:400px;box-shadow:0 4px 12px rgba(0,0,0,.15);text-align:center}
+      .ai-share-close-btn{position:absolute;top:16px;right:16px;cursor:pointer;padding:8px;background:transparent;border:none;display:flex;align-items:center;justify-content:center}
+      .ai-share-close-btn:hover{background:#F8F9FA;border-radius:50%}
+      .ai-share-box h3{margin:0 0 15px;font-size:18px}
+      .ai-share-box p{color:#666;margin:10px 0}
+      .ai-share-actions{display:flex;gap:16px;padding:0 20px 24px;margin-top:24px}
+      .ai-share-actions button{flex:1;height:48px;border-radius:24px;border:none;font-size:15px;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;transition:transform .1s}
+      .ai-share-actions button:active{transform:scale(.96)}
+      .ai-share-copy{background:#F5F7FA;color:#333}
+      .ai-share-download{background:#111;color:#fff;box-shadow:0 6px 16px -4px rgba(0,0,0,.3)}
+    `;
+      document.head.appendChild(style);
+    }
+
+    const html = `
+    <button class="ai-share-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="18" cy="5" r="3"></circle>
+        <circle cx="6" cy="12" r="3"></circle>
+        <circle cx="18" cy="19" r="3"></circle>
+        <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+        <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+      </svg>
+      ${buttonText}
+    </button>
+    <div class="ai-share-modal">
+      <div class="ai-share-box">
+        <button class="ai-share-close-btn">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#999" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+        <div class="ai-share-loading" style="display:none;padding:40px;text-align:center">生成中...</div>
+        <img class="ai-share-poster" style="display:none;max-width:100%;border-radius:8px">
+        <div class="ai-share-actions">
+          <button class="ai-share-copy">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            复制链接
+          </button>
+          <button class="ai-share-download">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            保存图片
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+    const wrapper = document.createElement('div');
+    wrapper.id = widgetId;
+    if (!isInline) wrapper.className = 'ai-share-widget-fixed';
+    wrapper.innerHTML = html;
+
+    if (isInline) {
+      const targetEl = typeof container === 'string' ? document.querySelector(container) : container;
+      if (targetEl) targetEl.appendChild(wrapper);
+    } else {
+      document.body.appendChild(wrapper);
+    }
+
+    const btn = wrapper.querySelector('.ai-share-btn');
+    const modal = wrapper.querySelector('.ai-share-modal');
+    const loading = wrapper.querySelector('.ai-share-loading');
+    const posterImg = wrapper.querySelector('.ai-share-poster');
+    const downloadBtn = wrapper.querySelector('.ai-share-download');
+    const copyBtn = wrapper.querySelector('.ai-share-copy');
+    const closeBtn = wrapper.querySelector('.ai-share-close-btn');
+
+    btn.onclick = async () => {
+      modal.classList.add('show');
+      loading.style.display = 'block';
+      posterImg.style.display = 'none';
+
+      try {
+        const dataUrl = await sdk.createPosterByTemplate({
+          title,
+          description,
+          url: window.location.href,
+          appName,
+          appIcon,
+          coverImage,
+          themeColor
+        });
+        posterImg.src = dataUrl;
+        posterImg.style.display = 'block';
+        loading.style.display = 'none';
+        sdk.trackEvent('share_poster_generate', { title });
+      } catch (error) {
+        loading.textContent = '生成失败';
+        setTimeout(() => modal.classList.remove('show'), 2000);
+      }
+    };
+
+    closeBtn.onclick = () => modal.classList.remove('show');
+    modal.onclick = (e) => e.target === modal && closeBtn.click();
+
+    downloadBtn.onclick = () => {
+      const a = document.createElement('a');
+      a.href = posterImg.src;
+      a.download = `${title}-分享海报.png`;
+      a.click();
+      sdk.trackEvent('share_poster_download', { title });
+      onShare({ type: 'download', title });
+    };
+
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        copyBtn.textContent = '已复制！';
+        setTimeout(() => copyBtn.textContent = '复制链接', 2000);
+        sdk.trackEvent('share_copy', { url: window.location.href });
+        onShare({ type: 'copy', url: window.location.href });
+      } catch (error) {
+        alert('复制失败，请手动复制链接');
+      }
+    };
+
+    return wrapper
+  }
+
+  /**
+   * App Insight Frontend SDK
+   * Version: 2.1.0
+   */
+
+
+  // ============ 主SDK类 ============
+
+  class AppInsightSDK {
+    constructor() {
+      this.config = {
+        appCode: '',
+        publicToken: '',
+        apiEndpoint: 'https://insightapp.memect.cn',
+        autoTrackPageView: false,
+        batchSize: 10,
+        batchInterval: 5000,
+        debug: false
+      };
+      this.queue = [];
+      this.timer = null;
+      this.userId = null;
+      this.userProperties = {};
+      this.deviceId = this._getOrCreateDeviceId();
+      this.sessionId = this._generateSessionId();
+      this.pageEnterTime = Date.now();
+      this.isPageVisible = true;
+      this.totalVisibleTime = 0;
+      this.lastVisibilityChange = Date.now();
+      this.initialized = false;
+    }
+
+    /**
+     * 初始化SDK
+     */
+    init(config) {
+      if (this.initialized) {
+        console.warn('[AppInsight] SDK already initialized');
+        return
+      }
+
+      this.config = { ...this.config, ...config };
+
+      if (this.config.debug) {
+        console.log('[AppInsight] SDK initialized', this.config);
+      }
+
+      this.initialized = true;
+
+      // 启动批量上报定时器
+      this._startBatchTimer();
+
+      // 自动追踪页面访问
+      if (this.config.autoTrackPageView) {
+        this.trackPageView();
+
+        // 监听路由变化（SPA）
+        if (typeof window !== 'undefined') {
+          window.addEventListener('popstate', () => this.trackPageView());
+          this._monitorHistoryChanges();
+        }
+      }
+
+      // 页面卸载时上报剩余数据
+      if (typeof window !== 'undefined') {
+        window.addEventListener('beforeunload', () => {
+          this._flush();
+        });
+      }
+
+      // 自动采集首屏加载时间
+      this._trackPageLoadPerformance();
+
+      // 自动追踪页面可见性（使用时长）
+      this._trackPageVisibility();
+    }
+
+    /**
+     * 追踪页面访问
+     */
+    trackPageView(params = {}) {
+      const data = {
+        event_type: 'page_view',
+        page: params.page || window.location.pathname,
+        title: params.title || document.title,
+        referrer: params.referrer || document.referrer,
+        url: window.location.href,
+        timestamp: new Date().toISOString(),
+        ...this._getCommonData()
+      };
+
+      this._addToQueue(data);
+    }
+
+    /**
+     * 追踪事件
+     */
+    trackEvent(eventName, properties = {}) {
+      const data = {
+        event_type: 'custom_event',
+        event_name: eventName,
+        properties: properties,
+        timestamp: new Date().toISOString(),
+        ...this._getCommonData()
+      };
+
+      this._addToQueue(data);
+    }
+
+    /**
+     * 追踪错误
+     */
+    trackError(error, context = {}) {
+      const data = {
+        event_type: 'error',
+        error_message: error.message || String(error),
+        error_stack: error.stack || '',
+        error_type: error.name || 'Error',
+        context: context,
+        page: window.location.pathname,
+        timestamp: new Date().toISOString(),
+        ...this._getCommonData()
+      };
+
+      this._addToQueue(data);
+    }
+
+    /**
+     * 启用全局错误监控
+     */
+    enableErrorTracking() {
+      if (typeof window === 'undefined') return
+
+      window.addEventListener('error', (event) => {
+        this.trackError(event.error || new Error(event.message), {
+          filename: event.filename,
+          lineno: event.lineno,
+          colno: event.colno
+        });
+      });
+
+      window.addEventListener('unhandledrejection', (event) => {
+        this.trackError(new Error(event.reason), {
+          type: 'unhandled_promise_rejection'
+        });
+      });
+    }
+
+    /**
+     * 追踪性能指标
+     */
+    trackPerformance(metric) {
+      const data = {
+        event_type: 'performance',
+        metric_name: metric.metric,
+        metric_value: metric.value,
+        page: metric.page || window.location.pathname,
+        timestamp: new Date().toISOString(),
+        ...this._getCommonData()
+      };
+
+      this._addToQueue(data);
+    }
+
+    /**
+     * 设置用户ID
+     */
+    setUserId(userId) {
+      this.userId = userId;
+    }
+
+    /**
+     * 设置用户属性
+     */
+    setUserProperties(properties) {
+      this.userProperties = { ...this.userProperties, ...properties };
+    }
+
+    /**
+     * 提交反馈
+     */
+    submitFeedback(content, contact = '', extraContext = {}) {
+      const endpoint = `${this.config.apiEndpoint.replace(/\/$/, '')}/api/feedbacks`;
+
+      // 收集丰富的上下文信息
+      const context = {
+        page_url: window.location.href,
+        page_title: document.title,
+        page_path: window.location.pathname,
+        referrer: document.referrer,
+        timestamp: new Date().toISOString(),
+        browser: this._parseDeviceInfo().browser,
+        os: this._parseDeviceInfo().os,
+        device_type: this._parseDeviceInfo().deviceType,
+        screen: `${window.screen.width}x${window.screen.height}`,
+        viewport: `${window.innerWidth}x${window.innerHeight}`,
+        language: navigator.language,
+        ...extraContext
+      };
+
+      return fetch(endpoint, {
+        method: 'POST',
+        headers: (() => {
+          const h = { 'Content-Type': 'application/json' };
+          if (this.config.appCode) h['X-App-ID'] = this.config.appCode;
+          if (this.config.publicToken) h['X-Public-Token'] = this.config.publicToken;
+          return h
+        })(),
+        body: JSON.stringify({
+          content,
+          contact,
+          meta_data: context
+        })
+      })
+    }
+
+    /**
+     * 创建反馈组件
+     */
+    createFeedbackWidget(options = {}) {
+      return createFeedbackWidget(this, options)
+    }
+
+    /**
+     * 生成二维码（轻量级实现）
+     */
+    _generateQRCode(text, size = 200) {
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+
+      // 简化版：使用第三方API生成二维码
+      // 实际项目中可以用 qrcode.js 或后端生成
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=${size}x${size}&data=${encodeURIComponent(text)}`;
+
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0, size, size);
+          resolve(canvas);
+        };
+        img.onerror = () => {
+          // 失败时绘制占位符
+          ctx.fillStyle = '#f0f0f0';
+          ctx.fillRect(0, 0, size, size);
+          ctx.fillStyle = '#999';
+          ctx.font = '16px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('二维码', size / 2, size / 2);
+          resolve(canvas);
+        };
+        img.src = qrUrl;
+      })
+    }
+    /**
+     * 使用模板生成海报
+     */
+    async createPosterByTemplate(options = {}) {
+      const {
+        template = 'full_bleed',
+        title = document.title,
+        description = '快来体验吧！',
+        appName = '',
+        appIcon = '',
+        coverImage = '',
+        themeColor = '#667eea',
+        url = window.location.href
+      } = options;
+
+      const qrCode = await generateQRCode(url, 120);
+
+      const templateObj = templates[template] || templates.full_bleed;
+      const engine = new PosterEngine(templateObj, {
+        title,
+        description,
+        appName,
+        appIcon,
+        coverImage,
+        themeColor,
+        qrCode
+      });
+
+      return await engine.render()
+    }
+
+    /**
+     * 默认海报模板
+     */
+    async _renderDefaultTemplate({ width, height, title, description, url }) {
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+
+      // 渐变背景
+      const gradient = ctx.createLinearGradient(0, 0, 0, height);
+      gradient.addColorStop(0, '#667eea');
+      gradient.addColorStop(1, '#764ba2');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, width, height);
+
+      // 白色卡片
+      const cardY = 150;
+      const cardHeight = height - 300;
+      ctx.fillStyle = '#ffffff';
+      ctx.shadowColor = 'rgba(0,0,0,0.1)';
+      ctx.shadowBlur = 30;
+      ctx.shadowOffsetY = 10;
+      this._roundRect(ctx, 60, cardY, width - 120, cardHeight, 20);
+      ctx.fill();
+      ctx.shadowColor = 'transparent';
+
+      // 标题
+      ctx.fillStyle = '#1a1a1a';
+      ctx.font = 'bold 56px sans-serif';
+      ctx.textAlign = 'center';
+      this._wrapText(ctx, title, width / 2, cardY + 100, width - 200, 70);
+
+      // 描述
+      ctx.fillStyle = '#666';
+      ctx.font = '36px sans-serif';
+      this._wrapText(ctx, description, width / 2, cardY + 220, width - 200, 50);
+
+      // 二维码
+      const qrSize = 280;
+      const qrCanvas = await this._generateQRCode(url, qrSize);
+      const qrX = (width - qrSize) / 2;
+      const qrY = cardY + 350;
+      ctx.drawImage(qrCanvas, qrX, qrY, qrSize, qrSize);
+
+      // 提示文字
+      ctx.fillStyle = '#999';
+      ctx.font = '32px sans-serif';
+      ctx.fillText('长按识别二维码', width / 2, qrY + qrSize + 60);
+
+      return canvas.toDataURL('image/png')
+    }
+
+    /**
+     * 创建分享组件
+     */
+    createShareWidget(options = {}) {
+      return createShareWidget(this, options)
+    }
+
+    /**
+     * 手动上报数据
+     */
+    flush() {
+      this._flush();
+      if (this.config.debug) {
+        console.log('[AppInsight] Manual flush triggered');
+      }
+    }
+
+    /**
+     * 获取公共数据
+     */
+    _getCommonData() {
+      const deviceInfo = this._parseDeviceInfo();
+      return {
+        user_id: this.userId,
+        device_id: this.deviceId,
+        session_id: this.sessionId,
+        user_properties: this.userProperties,
+        user_agent: navigator.userAgent,
+        browser: deviceInfo.browser,
+        os: deviceInfo.os,
+        device_type: deviceInfo.deviceType,
+        screen_resolution: `${window.screen.width}x${window.screen.height}`,
+        viewport_size: `${window.innerWidth}x${window.innerHeight}`,
+        language: navigator.language
+      }
+    }
+
+    /**
+     * 解析设备信息
+     */
+    _parseDeviceInfo() {
+      const ua = navigator.userAgent;
+      let browser = 'Unknown';
+      let os = 'Unknown';
+      let deviceType = 'Desktop';
+
+      // 解析浏览器
+      if (ua.indexOf('Chrome') > -1 && ua.indexOf('Edg') === -1) {
+        browser = 'Chrome';
+      } else if (ua.indexOf('Safari') > -1 && ua.indexOf('Chrome') === -1) {
+        browser = 'Safari';
+      } else if (ua.indexOf('Firefox') > -1) {
+        browser = 'Firefox';
+      } else if (ua.indexOf('Edg') > -1) {
+        browser = 'Edge';
+      } else if (ua.indexOf('MSIE') > -1 || ua.indexOf('Trident') > -1) {
+        browser = 'IE';
+      }
+
+      // 解析操作系统
+      if (ua.indexOf('Win') > -1) {
+        os = 'Windows';
+      } else if (ua.indexOf('Mac') > -1) {
+        os = 'macOS';
+      } else if (ua.indexOf('Linux') > -1) {
+        os = 'Linux';
+      } else if (ua.indexOf('Android') > -1) {
+        os = 'Android';
+        deviceType = 'Mobile';
+      } else if (ua.indexOf('iOS') > -1 || ua.indexOf('iPhone') > -1 || ua.indexOf('iPad') > -1) {
+        os = 'iOS';
+        deviceType = ua.indexOf('iPad') > -1 ? 'Tablet' : 'Mobile';
+      }
+
+      // 检测移动设备
+      if (/Mobile|Android|iPhone/i.test(ua)) {
+        deviceType = 'Mobile';
+      } else if (/Tablet|iPad/i.test(ua)) {
+        deviceType = 'Tablet';
+      }
+
+      return { browser, os, deviceType }
+    }
+
+    /**
+     * 添加到队列
+     */
+    _addToQueue(data) {
+      this.queue.push(data);
+
+      if (this.config.debug) {
+        console.log('[AppInsight] Event added to queue:', data);
+      }
+
+      // 达到批量大小立即上报
+      if (this.queue.length >= this.config.batchSize) {
+        this._flush();
+      }
+    }
+
+    /**
+     * 启动批量上报定时器
+     */
+    _startBatchTimer() {
+      if (this.timer) {
+        clearInterval(this.timer);
+      }
+
+      this.timer = setInterval(() => {
+        if (this.queue.length > 0) {
+          this._flush();
+        }
+      }, this.config.batchInterval);
+    }
+
+    /**
+     * 上报数据
+     */
+    _flush() {
+      if (this.queue.length === 0) return
+
+      const events = [...this.queue];
+
+      // 转换为后端期望的格式
+      const metrics = events.map(event => {
+        const { event_type, timestamp, ...payload } = event;
+
+        return {
+          type: this._mapEventType(event_type),
+          payload: payload,
+          timestamp: timestamp
+        }
+      });
+
+      const payload = {
+        metrics: metrics
+      };
+
+      if (this.config.debug) {
+        console.log('[AppInsight] Flushing events:', payload);
+      }
+
+      // 智能处理 API 端点
+      let endpoint = this.config.apiEndpoint.replace(/\/$/, '');
+      if (endpoint.endsWith('/api')) {
+        endpoint = `${endpoint}/metrics/track`;
+      } else {
+        endpoint = `${endpoint}/api/metrics/track`;
+      }
+
+      const data = JSON.stringify(payload);
+
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.config.appCode) headers['X-App-ID'] = this.config.appCode;
+      if (this.config.publicToken) headers['X-Public-Token'] = this.config.publicToken;
+
+      // 使用 fetch
+      fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: data,
+        keepalive: true
+      }).then(response => {
+        if (response.ok) {
+          // 发送成功，清空队列
+          this.queue = this.queue.slice(events.length);
+        } else {
+          if (this.config.debug) {
+            console.error('[AppInsight] Failed to send events, will retry later');
+          }
+        }
+      }).catch(err => {
+        if (this.config.debug) {
+          console.error('[AppInsight] Failed to send events:', err);
+        }
+      });
+    }
+
+    /**
+     * 映射事件类型
+     */
+    _mapEventType(eventType) {
+      const typeMap = {
+        'page_view': 'PAGE_VIEW',
+        'custom_event': 'EVENT',
+        'error': 'ERROR',
+        'performance': 'PERFORMANCE'
+      };
+      return typeMap[eventType] || 'EVENT'
+    }
+
+    /**
+     * 生成会话ID
+     */
+    _generateSessionId() {
+      return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    }
+
+    /**
+     * 监听History API变化
+     */
+    _monitorHistoryChanges() {
+      const originalPushState = history.pushState;
+      const originalReplaceState = history.replaceState;
+
+      history.pushState = (...args) => {
+        originalPushState.apply(history, args);
+        this.trackPageView();
+      };
+
+      history.replaceState = (...args) => {
+        originalReplaceState.apply(history, args);
+        this.trackPageView();
+      };
+    }
+
+    /**
+     * 追踪页面加载性能
+     */
+    _trackPageLoadPerformance() {
+      if (typeof window === 'undefined' || !window.performance || !window.performance.timing) {
+        return
+      }
+
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          const timing = window.performance.timing;
+          const loadTime = timing.loadEventEnd - timing.navigationStart;
+          const domReady = timing.domContentLoadedEventEnd - timing.navigationStart;
+          const firstPaint = timing.responseEnd - timing.fetchStart;
+
+          this.trackPerformance({
+            metric: 'page_load_time',
+            value: loadTime,
+            page: window.location.pathname
+          });
+
+          this.trackPerformance({
+            metric: 'dom_ready_time',
+            value: domReady,
+            page: window.location.pathname
+          });
+
+          this.trackPerformance({
+            metric: 'first_paint_time',
+            value: firstPaint,
+            page: window.location.pathname
+          });
+
+          if (this.config.debug) {
+            console.log('[AppInsight] Page load performance tracked:', {
+              loadTime,
+              domReady,
+              firstPaint
+            });
+          }
+        }, 0);
+      });
+    }
+
+    /**
+     * 追踪页面可见性
+     */
+    _trackPageVisibility() {
+      if (typeof document === 'undefined' || typeof document.hidden === 'undefined') {
+        return
+      }
+
+      document.addEventListener('visibilitychange', () => {
+        const now = Date.now();
+
+        if (document.hidden) {
+          if (this.isPageVisible) {
+            this.totalVisibleTime += now - this.lastVisibilityChange;
+            this.isPageVisible = false;
+
+            if (this.config.debug) {
+              console.log('[AppInsight] Page hidden, visible time:', this.totalVisibleTime);
+            }
+          }
+        } else {
+          this.isPageVisible = true;
+          this.lastVisibilityChange = now;
+
+          if (this.config.debug) {
+            console.log('[AppInsight] Page visible');
+          }
+        }
+      });
+
+      window.addEventListener('beforeunload', () => {
+        const now = Date.now();
+
+        if (this.isPageVisible) {
+          this.totalVisibleTime += now - this.lastVisibilityChange;
+        }
+
+        this.trackEvent('page_duration', {
+          page: window.location.pathname,
+          total_time: now - this.pageEnterTime,
+          visible_time: this.totalVisibleTime,
+          hidden_time: (now - this.pageEnterTime) - this.totalVisibleTime
+        });
+
+        if (this.config.debug) {
+          console.log('[AppInsight] Page duration tracked:', {
+            totalTime: now - this.pageEnterTime,
+            visibleTime: this.totalVisibleTime
+          });
+        }
+      });
+    }
+
+    /**
+     * 获取或创建设备ID
+     */
+    _getOrCreateDeviceId() {
+      const storageKey = '_ai_device_id';
+
+      try {
+        const existingId = localStorage.getItem(storageKey);
+        if (existingId) {
+          return existingId
+        }
+      } catch (e) {
+        // localStorage 不可用
+      }
+
+      const deviceId = this._generateDeviceFingerprint();
+
+      try {
+        localStorage.setItem(storageKey, deviceId);
+      } catch (e) {
+        // 忽略存储失败
+      }
+
+      return deviceId
+    }
+
+    /**
+     * 生成设备指纹
+     */
+    _generateDeviceFingerprint() {
+      const components = [];
+
+      components.push(navigator.userAgent);
+      components.push(navigator.language);
+      components.push(`${window.screen.width}x${window.screen.height}x${window.screen.colorDepth}`);
+      components.push(new Date().getTimezoneOffset());
+      components.push(navigator.platform);
+
+      if (navigator.hardwareConcurrency) {
+        components.push(navigator.hardwareConcurrency);
+      }
+
+      components.push(navigator.maxTouchPoints || 0);
+
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.textBaseline = 'top';
+          ctx.font = '14px Arial';
+          ctx.fillStyle = '#f60';
+          ctx.fillRect(0, 0, 100, 50);
+          ctx.fillStyle = '#069';
+          ctx.fillText('AppInsight', 2, 2);
+          components.push(canvas.toDataURL());
+        }
+      } catch (e) {
+        components.push('canvas-error');
+      }
+
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        if (gl) {
+          const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+          if (debugInfo) {
+            components.push(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
+            components.push(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+          }
+        }
+      } catch (e) {
+        components.push('webgl-error');
+      }
+
+      if (navigator.plugins && navigator.plugins.length > 0) {
+        const plugins = Array.from(navigator.plugins)
+          .map(p => p.name)
+          .sort()
+          .join(',');
+        components.push(plugins);
+      }
+
+      const fingerprint = components.join('|');
+      return this._simpleHash(fingerprint)
+    }
+
+    /**
+     * 简单哈希函数
+     */
+    _simpleHash(str) {
+      let hash = 0;
+      for (let i = 0; i < str.length; i++) {
+        const char = str.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+
+      const positiveHash = Math.abs(hash).toString(36);
+      const randomPart = Math.random().toString(36).substr(2, 5);
+      return `device_${positiveHash}_${randomPart}`
+    }
+  }
+
+  // 创建单例实例
+  const appInsight = new AppInsightSDK();
+
+  return appInsight;
+
+})();

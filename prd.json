@@ -1,0 +1,80 @@
+{
+  "project": "Nginx Learning Game",
+  "branchName": "ralph/nginx-learning-education-impact",
+  "description": "Make the 10-lesson Nginx learning game genuinely educational by adding explicit teaching goals, misconception-driven hints, structured explanations, and mastery recaps.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Add teaching metadata to lesson content",
+      "description": "As a learner, I want each lesson to state what it teaches and which misconception it corrects so that I know the point of the exercise.",
+      "acceptanceCriteria": [
+        "Each MVP lesson record includes teaches, misconceptions, and whyItWorks fields",
+        "Each lesson record includes at least one misconception tied to the lesson topic",
+        "The external lesson bundle remains loadable by the runtime",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-002",
+      "title": "Render learning objectives and misconceptions in the lesson UI",
+      "description": "As a learner, I want to see the concept target and common mistakes before editing config so that I can approach the lesson intentionally.",
+      "acceptanceCriteria": [
+        "The lesson screen shows a You are learning section",
+        "The lesson screen shows a Common mistakes section before validation",
+        "These sections render from lesson content instead of hard-coded copy",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-003",
+      "title": "Turn validation output into a structured teaching debrief",
+      "description": "As a learner, I want post-run feedback to explain why the config worked or failed so that I build a correct mental model.",
+      "acceptanceCriteria": [
+        "The lesson result area shows a structured Why this works section after validation",
+        "Failed runs show lesson-specific recovery hints instead of only generic review notes",
+        "Successful runs still explain the underlying Nginx behavior",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-004",
+      "title": "Map failed checks to misconception-specific hints",
+      "description": "As a learner, I want each failed check to point to the misconception behind it so that I correct the real misunderstanding, not just the surface config.",
+      "acceptanceCriteria": [
+        "The validator result model supports hint keys or hint text per failed check",
+        "At least the route, proxy, auth, websocket, and cache lessons expose specific failed-check hints",
+        "The lesson UI renders those hints next to failed checks",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "US-005",
+      "title": "Show a mastery recap after lesson completion",
+      "description": "As a learner, I want a short recap after I pass a lesson so that I remember the rule, the symptom, and the next related topic.",
+      "acceptanceCriteria": [
+        "Passed lessons show a recap block with Rule, Symptom, and Next skill",
+        "The recap content comes from lesson data where possible",
+        "The recap appears only after successful completion",
+        "Typecheck passes",
+        "Verify in browser using dev-browser skill"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

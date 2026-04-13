@@ -1,0 +1,100 @@
+{
+  "id": "mvp-01-welcome-page",
+  "chapter": 1,
+  "order": 1,
+  "title": "Welcome Page Online",
+  "summary": "Confirm the default Nginx site is reachable and understand the minimum static-site config.",
+  "difficulty": "intro",
+  "sourceSkills": [
+    "nginx-welcome-page-health-check"
+  ],
+  "prerequisites": [],
+  "scenario": {
+    "persona": "New operations engineer",
+    "businessContext": "Nginx is installed on a test machine, but the home page is still unavailable. Make the default site respond successfully.",
+    "topology": [
+      { "id": "browser", "type": "client", "label": "Browser" },
+      { "id": "nginx", "type": "proxy", "label": "Nginx" },
+      { "id": "static", "type": "filesystem", "label": "Static Files" }
+    ],
+    "trafficSamples": [
+      {
+        "id": "home",
+        "label": "Home request",
+        "request": {
+          "method": "GET",
+          "path": "/",
+          "headers": {
+            "Host": "example.local"
+          }
+        }
+      }
+    ],
+    "initialConfig": "server {\n    listen 80;\n    root /srv/www/html;\n}\n",
+    "editableBlocks": [
+      {
+        "id": "default-server",
+        "title": "Default site config",
+        "mode": "structured"
+      }
+    ],
+    "observability": {
+      "panels": [
+        "browser-preview",
+        "access-log",
+        "request-result",
+        "config-diff"
+      ]
+    }
+  },
+  "objectives": {
+    "mustPass": [
+      {
+        "id": "home-returns-200",
+        "description": "The home page must return HTTP 200.",
+        "request": {
+          "method": "GET",
+          "path": "/",
+          "headers": {
+            "Host": "example.local"
+          }
+        },
+        "expect": {
+          "status": 200,
+          "bodyIncludes": "Welcome to nginx"
+        }
+      }
+    ],
+    "hiddenTests": [
+      {
+        "id": "index-resolution",
+        "description": "Verify that the solution resolves / through an index file instead of hard-coding a response."
+      }
+    ],
+    "scoreRules": {
+      "correctness": 40,
+      "stability": 20,
+      "performance": 10,
+      "maintainability": 30
+    }
+  },
+  "explanation": {
+    "whyItWorks": [
+      "The default site must first match a server block, then use root and index together to resolve /.",
+      "If root exists but index is missing, / may not resolve to the expected landing page."
+    ],
+    "commonMistakes": [
+      {
+        "title": "Set root only",
+        "reason": "Beginners often assume the directory will automatically map to the welcome page file."
+      },
+      {
+        "title": "Use return 200 with a hard-coded body",
+        "reason": "That can pass a shallow test but does not teach how a real static site works."
+      }
+    ],
+    "recommendedReading": [
+      "nginx-welcome-page-health-check"
+    ]
+  }
+}

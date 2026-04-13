@@ -1,0 +1,146 @@
+// Enemy type definitions
+var ENEMY_TYPES = {
+  // Chapter 1 enemies
+  slow_conn: {
+    id: 'slow_conn', name: '慢连接攻击', icon: '🐌',
+    hp: 60, speed: 40, dmg: 8, reward: 5,
+    color: '#ef4444', shape: 'sphere',
+    desc: '移动缓慢但血量高，被高并发配置服务器双倍伤害',
+    weakTo: ['worker_connections'], resistTo: [],
+    category: 'basic', rarity: 'normal'
+  },
+  basic_flood: {
+    id: 'basic_flood', name: '基础洪水', icon: '🌊',
+    hp: 30, speed: 70, dmg: 5, reward: 3,
+    color: '#f97316', shape: 'cone',
+    desc: '大量低血量单位，快速冲击防线',
+    weakTo: ['index_rate_limit'], resistTo: [],
+    category: 'basic', rarity: 'normal'
+  },
+  log_bypass: {
+    id: 'log_bypass', name: '日志绕过', icon: '👻',
+    hp: 45, speed: 55, dmg: 6, reward: 4,
+    color: '#a855f7', shape: 'sphere',
+    desc: '隐身单位，被错误日志配置服务器可见并受双倍伤害',
+    weakTo: ['error_log'], resistTo: [],
+    category: 'basic', rarity: 'normal'
+  },
+  conn_exhaust: {
+    id: 'conn_exhaust', name: '连接耗尽', icon: '🔗',
+    hp: 80, speed: 35, dmg: 12, reward: 7,
+    color: '#dc2626', shape: 'cube',
+    desc: '消耗连接资源，被限速配置减速效果加倍',
+    weakTo: ['index_rate_limit', 'worker_connections'], resistTo: [],
+    category: 'basic', rarity: 'normal'
+  },
+
+  // Chapter 2 enemies
+  heavy_request: {
+    id: 'heavy_request', name: '大体积请求', icon: '🏋️',
+    hp: 120, speed: 30, dmg: 15, reward: 10,
+    color: '#b45309', shape: 'cube',
+    desc: '体积巨大，被Gzip压缩配置服务器额外80%伤害',
+    weakTo: ['gzip', 'response_buffer'], resistTo: ['basic_flood'],
+    category: 'performance', rarity: 'normal'
+  },
+  cache_bypass: {
+    id: 'cache_bypass', name: '缓存绕过', icon: '🚫',
+    hp: 70, speed: 60, dmg: 10, reward: 8,
+    color: '#7c3aed', shape: 'cone',
+    desc: '绕过缓存直接攻击，被代理缓存配置有效拦截',
+    weakTo: ['fastcgi_cache', 'proxy_cache'], resistTo: [],
+    category: 'performance', rarity: 'normal'
+  },
+
+  // Chapter 3 enemies
+  jwt_brute: {
+    id: 'jwt_brute', name: 'JWT令牌爆破', icon: '🔨',
+    hp: 100, speed: 50, dmg: 20, reward: 15,
+    color: '#dc2626', shape: 'cube',
+    desc: '只有配置JWT认证的服务器才能有效伤害',
+    weakTo: ['jwt_auth'], resistTo: ['basic_auth'],
+    requiresSkill: 'jwt_auth',
+    category: 'security', rarity: 'elite'
+  },
+  plaintext_attack: {
+    id: 'plaintext_attack', name: '明文攻击', icon: '📄',
+    hp: 50, speed: 90, dmg: 18, reward: 12,
+    color: '#f59e0b', shape: 'cone',
+    desc: '移动极快，被SSL/TLS配置服务器一击必杀',
+    weakTo: ['ssl_tls'], resistTo: [],
+    requiresSkill: 'ssl_tls',
+    category: 'security', rarity: 'normal'
+  },
+  ssl_bypass: {
+    id: 'ssl_bypass', name: 'SSL绕过扫描', icon: '🔓',
+    hp: 90, speed: 45, dmg: 22, reward: 18,
+    color: '#ef4444', shape: 'sphere',
+    desc: '尝试绕过SSL防护，需要SSL/TLS和JWT双重防护',
+    weakTo: ['ssl_tls', 'jwt_auth'], resistTo: ['basic_auth'],
+    category: 'security', rarity: 'elite'
+  },
+  scraper: {
+    id: 'scraper', name: '盗链爬虫', icon: '🕷️',
+    hp: 60, speed: 65, dmg: 8, reward: 10,
+    color: '#6b7280', shape: 'sphere',
+    desc: '优先攻击无防护服务器，被安全链接配置完全免疫',
+    weakTo: ['secure_link'], resistTo: [],
+    requiresSkill: 'secure_link',
+    category: 'security', rarity: 'normal'
+  },
+
+  // Chapter 4 enemies
+  elite_ddos: {
+    id: 'elite_ddos', name: '精英DDoS', icon: '💀',
+    hp: 300, speed: 40, dmg: 35, reward: 30,
+    color: '#7f1d1d', shape: 'cube',
+    desc: '精英单位，高血量高伤害，被gRPC代理额外40%伤害',
+    weakTo: ['grpc_proxy', 'upstream_failover'], resistTo: ['basic_auth', 'error_log'],
+    category: 'advanced', rarity: 'elite'
+  }
+};
+
+// Wave generation logic
+function generateWave(levelDef, waveIndex) {
+  var types = levelDef.enemyTypes;
+  var difficulty = 1 + waveIndex * 0.25;
+  var enemies = [];
+  var count = Math.floor(5 + waveIndex * 2);
+
+  // Last wave is always harder
+  if (waveIndex === levelDef.waves - 1) {
+    difficulty *= 1.5;
+    count = Math.floor(count * 1.5);
+  }
+
+  for (var i = 0; i < count; i++) {
+    var typeId = types[i % types.length];
+    var base = ENEMY_TYPES[typeId];
+    if (!base) continue;
+    enemies.push({
+      typeId: typeId,
+      hp: Math.floor(base.hp * difficulty),
+      maxHp: Math.floor(base.hp * difficulty),
+      speed: base.speed,
+      dmg: Math.floor(base.dmg * difficulty),
+      reward: base.reward,
+      spawnDelay: i * 800 + Math.random() * 300
+    });
+  }
+  return enemies;
+}
+
+// Get wave preview summary
+function getWavePreview(levelDef, waveIndex) {
+  var types = levelDef.enemyTypes;
+  var counts = {};
+  var count = Math.floor(5 + waveIndex * 2);
+  if (waveIndex === levelDef.waves - 1) count = Math.floor(count * 1.5);
+  for (var i = 0; i < count; i++) {
+    var t = types[i % types.length];
+    counts[t] = (counts[t] || 0) + 1;
+  }
+  return Object.keys(counts).map(function(k) {
+    return { typeId: k, count: counts[k], enemy: ENEMY_TYPES[k] };
+  });
+}

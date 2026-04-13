@@ -1,0 +1,425 @@
+// Skills data - mapped from 80 Nginx skills to game mechanics
+// Categories: basic, performance, security, advanced
+var SKILLS_DATA = {
+  // ===== SERVER TYPES (deployable towers) =====
+  serverTypes: [
+    {
+      id: 'basic',
+      name: '基础节点',
+      icon: '⬡',
+      cost: 20,
+      desc: '基础Nginx服务器，均衡攻防',
+      hp: 100, atk: 15, range: 120, atkSpeed: 1.2, color: '#3b82f6'
+    },
+    {
+      id: 'cache',
+      name: '缓存节点',
+      icon: '💾',
+      cost: 35,
+      desc: '高缓存命中率，AOE减速',
+      hp: 80, atk: 10, range: 140, atkSpeed: 0.9, color: '#10b981'
+    },
+    {
+      id: 'proxy',
+      name: '代理节点',
+      icon: '🔀',
+      cost: 40,
+      desc: '负载均衡，多目标攻击',
+      hp: 90, atk: 20, range: 110, atkSpeed: 1.5, color: '#8b5cf6'
+    },
+    {
+      id: 'security',
+      name: '安全节点',
+      icon: '🔒',
+      cost: 50,
+      desc: '高防御，对加密敌人有效',
+      hp: 150, atk: 25, range: 100, atkSpeed: 0.8, color: '#f59e0b'
+    }
+  ],
+
+  // ===== SKILL MODULES (configurable on servers) =====
+  // Each skill: id, name, icon, desc, cost(bandwidth), effect, category, chapter
+  modules: [
+    // --- CHAPTER 1: Basic ---
+    {
+      id: 'worker_connections',
+      name: '并发连接调优',
+      icon: '⚡',
+      desc: 'worker_connections提升，攻击速度+40%',
+      cost: 8,
+      effect: { atkSpeedMult: 1.4 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-connection-concurrency-tuning'
+    },
+    {
+      id: 'error_log',
+      name: '错误日志配置',
+      icon: '📋',
+      desc: '精准日志分析，对所有敌人伤害+15%',
+      cost: 5,
+      effect: { atkMult: 1.15 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-error-log-configuration'
+    },
+    {
+      id: 'process_control',
+      name: '进程控制',
+      icon: '⚙️',
+      desc: '优雅重载，服务器HP恢复+20',
+      cost: 6,
+      effect: { hpBonus: 20 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-process-control-and-config-reload'
+    },
+    {
+      id: 'domain_redirect',
+      name: '域名重定向',
+      icon: '↪️',
+      desc: '重定向攻击，射程+30',
+      cost: 7,
+      effect: { rangeBonus: 30 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-domain-redirect-best-practice'
+    },
+    {
+      id: 'index_rate_limit',
+      name: '请求限速',
+      icon: '🚦',
+      desc: '限速光环，范围内敌人减速40%',
+      cost: 10,
+      effect: { slowAura: 0.4, auraRange: 100 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-index-and-rate-limiting'
+    },
+    {
+      id: 'health_check',
+      name: '健康检查',
+      icon: '💊',
+      desc: '自动检测，每5秒恢复5HP',
+      cost: 8,
+      effect: { hpRegen: 5 },
+      category: 'basic',
+      chapter: 1,
+      skillRef: 'nginx-upstream-health-check'
+    },
+
+    // --- CHAPTER 2: Performance ---
+    {
+      id: 'thread_pool',
+      name: '线程池I/O优化',
+      icon: '🧵',
+      desc: '异步I/O，攻击间隔消除，攻速+60%',
+      cost: 15,
+      effect: { atkSpeedMult: 1.6 },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'nginx-thread-pool-io-optimization'
+    },
+    {
+      id: 'fastcgi_cache',
+      name: 'FastCGI缓存',
+      icon: '⚡',
+      desc: '缓存命中，30%概率使敌人静止2秒',
+      cost: 18,
+      effect: { freezeChance: 0.3, freezeDuration: 2000 },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'fastcgi-cache-configuration-and-lifecycle'
+    },
+    {
+      id: 'gzip',
+      name: 'Gzip压缩',
+      icon: '🗜️',
+      desc: '压缩数据包，对大体积敌人伤害+80%',
+      cost: 12,
+      effect: { atkMult: 1.8, vsType: 'heavy' },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'nginx-gzip-compression-and-static-file-handling'
+    },
+    {
+      id: 'proxy_cache',
+      name: '代理缓存',
+      icon: '🔄',
+      desc: '消灭敌人后生成缓存镜像，自动攻击附近敌人一次',
+      cost: 20,
+      effect: { cacheClone: true },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'proxy-cache-core-configuration-and-key-generation'
+    },
+    {
+      id: 'response_buffer',
+      name: '响应缓冲控制',
+      icon: '📦',
+      desc: '缓冲优化，对单体敌人伤害+50%',
+      cost: 14,
+      effect: { atkMult: 1.5, vsType: 'single' },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'nginx-response-buffering-control'
+    },
+    {
+      id: 'load_balancer',
+      name: '负载均衡',
+      icon: '⚖️',
+      desc: '多目标攻击，同时攻击3个敌人',
+      cost: 22,
+      effect: { multiTarget: 3 },
+      category: 'performance',
+      chapter: 2,
+      skillRef: 'nginx-upstream-load-balancer-implementation'
+    },
+
+    // --- CHAPTER 3: Security ---
+    {
+      id: 'jwt_auth',
+      name: 'JWT认证',
+      icon: '🎫',
+      desc: '必须配置才能伤害JWT爆破敌人',
+      cost: 20,
+      effect: { unlocksVsType: 'jwt_brute' },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-jwt-authentication-configuration'
+    },
+    {
+      id: 'ssl_tls',
+      name: 'SSL/TLS代理',
+      icon: '🔐',
+      desc: '加密防护，一击必杀明文攻击敌人',
+      cost: 25,
+      effect: { instakillType: 'plaintext' },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-ssl-tls-proxy-security'
+    },
+    {
+      id: 'basic_auth',
+      name: 'HTTP基础认证',
+      icon: '🔑',
+      desc: '认证屏障，HP+50，防御+20%',
+      cost: 15,
+      effect: { hpBonus: 50, defMult: 0.8 },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-http-basic-auth-configuration'
+    },
+    {
+      id: 'secure_link',
+      name: '安全链接验证',
+      icon: '🛡️',
+      desc: '完全免疫盗链爬虫敌人攻击',
+      cost: 18,
+      effect: { immuneType: 'scraper' },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-secure-link-verification'
+    },
+    {
+      id: 'geoip',
+      name: 'GeoIP封锁',
+      icon: '🌍',
+      desc: '封锁地理区域，永久关闭1个敌人入口',
+      cost: 30,
+      effect: { blockSpawn: 1 },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-geoip-module-integration'
+    },
+    {
+      id: 'subrequest_auth',
+      name: '子请求授权',
+      icon: '🔍',
+      desc: '外部鉴权，对所有安全类敌人伤害+60%',
+      cost: 22,
+      effect: { atkMult: 1.6, vsCategory: 'security' },
+      category: 'security',
+      chapter: 3,
+      skillRef: 'nginx-subrequest-authorization'
+    },
+
+    // --- CHAPTER 4: Advanced ---
+    {
+      id: 'upstream_failover',
+      name: '上游故障转移',
+      icon: '🔁',
+      desc: '故障转移，服务器被摧毁时自动转移攻击范围',
+      cost: 28,
+      effect: { failover: true },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'fastcgi-upstream-failover-configuration'
+    },
+    {
+      id: 'dynamic_upstream',
+      name: '动态上游配置',
+      icon: '🔧',
+      desc: '运行时调整，每波次开始时攻击力+10%（叠加）',
+      cost: 30,
+      effect: { waveAtkBonus: 0.1 },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'nginx-dynamic-upstream-configuration'
+    },
+    {
+      id: 'websocket',
+      name: 'WebSocket代理',
+      icon: '🔌',
+      desc: '持久连接，攻击持续追踪目标，伤害+25%',
+      cost: 25,
+      effect: { tracking: true, atkMult: 1.25 },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'nginx-websocket-proxy-configuration'
+    },
+    {
+      id: 'grpc_proxy',
+      name: 'gRPC代理',
+      icon: '📡',
+      desc: 'HTTP/2穿透，对所有精英敌人伤害+40%',
+      cost: 32,
+      effect: { atkMult: 1.4, vsRarity: 'elite' },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'nginx-grpc-proxy-and-retry-configuration'
+    },
+    {
+      id: 'http2_tls',
+      name: 'HTTP/2 TLS',
+      icon: '🚀',
+      desc: 'ALPN加速，攻速+30%，射程+20',
+      cost: 28,
+      effect: { atkSpeedMult: 1.3, rangeBonus: 20 },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'http2-tls-alpn-requirement-check'
+    },
+    {
+      id: 'upstream_hc',
+      name: '主动健康检查',
+      icon: '📊',
+      desc: '持续监控，全场服务器HP恢复速度+50%',
+      cost: 35,
+      effect: { globalHpRegen: 0.5 },
+      category: 'advanced',
+      chapter: 4,
+      skillRef: 'nginx-upstream-health-check-configuration'
+    }
+  ],
+
+  // ===== GLOBAL TECH (research in skill tree) =====
+  globalTech: [
+    { id: 'geo_block', name: '地理封锁协议', icon: '🌐', desc: '封锁1个敌人入口', cost: 2, effect: { blockSpawn: 1 }, category: 'security', skillRef: 'nginx-geoip-module-integration' },
+    { id: 'real_ip', name: '真实IP重写', icon: '🎯', desc: '所有服务器射程+15', cost: 1, effect: { globalRangeBonus: 15 }, category: 'basic', skillRef: 'nginx-real-client-ip-rewrite' },
+    { id: 'server_hash', name: '服务器名哈希', icon: '#️⃣', desc: '初始核心+20', cost: 1, effect: { startCoresBonus: 20 }, category: 'basic', skillRef: 'nginx-server-names-hash-tuning' },
+    { id: 'memory_pool', name: '内存池优化', icon: '🧠', desc: '所有服务器HP+30', cost: 2, effect: { globalHpBonus: 30 }, category: 'performance', skillRef: 'nginx-memory-management-pool-and-shared-memory' },
+    { id: 'event_loop', name: '事件循环优化', icon: '🔄', desc: '所有服务器攻速+10%', cost: 2, effect: { globalAtkSpeedMult: 1.1 }, category: 'performance', skillRef: 'nginx-event-loop-processing' },
+    { id: 'connection_reuse', name: '连接复用', icon: '♻️', desc: '出售服务器回收100%资源', cost: 1, effect: { sellRefund: 1.0 }, category: 'basic', skillRef: 'nginx-connection-management-and-reuse' },
+    { id: 'http2_cipher', name: 'HTTP/2密码套件', icon: '🔒', desc: '安全节点伤害+25%', cost: 2, effect: { securityAtkMult: 1.25 }, category: 'security', skillRef: 'http2-cipher-suite-compliance' },
+    { id: 'slice_module', name: '响应切片', icon: '✂️', desc: '大流量敌人受到额外20%伤害', cost: 2, effect: { heavyDmgBonus: 0.2 }, category: 'performance', skillRef: 'nginx-response-slice-configuration' }
+  ]
+};
+
+// ===== LEVEL DEFINITIONS =====
+var LEVELS = [
+  // Chapter 1: Basic Deployment
+  { chapter: 1, level: 1, name: '初次部署', waves: 5, maxHp: 100, startCores: 60, startBandwidth: 40,
+    enemyTypes: ['slow_conn', 'basic_flood'],
+    skills: ['worker_connections', 'error_log', 'process_control'],
+    desc: '学习部署基础Nginx服务器，应对单一类型低强度攻击' },
+  { chapter: 1, level: 2, name: '日志分析', waves: 5, maxHp: 100, startCores: 55, startBandwidth: 35,
+    enemyTypes: ['slow_conn', 'basic_flood', 'log_bypass'],
+    skills: ['worker_connections', 'error_log', 'domain_redirect'],
+    desc: '配置错误日志，识别并拦截绕过日志的攻击' },
+  { chapter: 1, level: 3, name: '连接管理', waves: 6, maxHp: 100, startCores: 50, startBandwidth: 35,
+    enemyTypes: ['slow_conn', 'basic_flood', 'conn_exhaust'],
+    skills: ['worker_connections', 'index_rate_limit', 'health_check'],
+    desc: '应对连接耗尽攻击，配置并发连接限制' },
+  { chapter: 1, level: 4, name: '速率限制', waves: 6, maxHp: 100, startCores: 50, startBandwidth: 30,
+    enemyTypes: ['basic_flood', 'conn_exhaust', 'slow_conn'],
+    skills: ['index_rate_limit', 'domain_redirect', 'health_check'],
+    desc: '部署速率限制防御大流量攻击' },
+  { chapter: 1, level: 5, name: '基础防线', waves: 8, maxHp: 100, startCores: 60, startBandwidth: 40,
+    enemyTypes: ['slow_conn', 'basic_flood', 'conn_exhaust', 'log_bypass'],
+    skills: ['worker_connections', 'error_log', 'index_rate_limit', 'health_check'],
+    desc: '综合运用基础技能，构建完整防线' },
+
+  // Chapter 2: Performance Tuning
+  { chapter: 2, level: 1, name: '缓存初探', waves: 6, maxHp: 100, startCores: 65, startBandwidth: 45,
+    enemyTypes: ['heavy_request', 'cache_bypass', 'basic_flood'],
+    skills: ['thread_pool', 'fastcgi_cache', 'gzip'],
+    desc: '引入缓存技术，应对大体积请求攻击' },
+  { chapter: 2, level: 2, name: '线程优化', waves: 7, maxHp: 100, startCores: 60, startBandwidth: 40,
+    enemyTypes: ['heavy_request', 'slow_conn', 'cache_bypass'],
+    skills: ['thread_pool', 'response_buffer', 'fastcgi_cache'],
+    desc: '线程池优化，提升I/O处理能力' },
+  { chapter: 2, level: 3, name: '负载均衡', waves: 7, maxHp: 100, startCores: 70, startBandwidth: 50,
+    enemyTypes: ['heavy_request', 'cache_bypass', 'conn_exhaust', 'basic_flood'],
+    skills: ['load_balancer', 'proxy_cache', 'gzip'],
+    desc: '使用缓存和限流技能，获得2星以上评价' },
+  { chapter: 2, level: 4, name: '代理缓存', waves: 8, maxHp: 100, startCores: 65, startBandwidth: 45,
+    enemyTypes: ['heavy_request', 'cache_bypass', 'slow_conn', 'conn_exhaust'],
+    skills: ['proxy_cache', 'load_balancer', 'thread_pool', 'response_buffer'],
+    desc: '代理缓存配置，减少后端压力' },
+  { chapter: 2, level: 5, name: '性能巅峰', waves: 10, maxHp: 100, startCores: 75, startBandwidth: 55,
+    enemyTypes: ['heavy_request', 'cache_bypass', 'conn_exhaust', 'slow_conn', 'basic_flood'],
+    skills: ['thread_pool', 'fastcgi_cache', 'gzip', 'load_balancer', 'proxy_cache'],
+    desc: '综合性能调优，应对混合攻击波' },
+
+  // Chapter 3: Security Hardening
+  { chapter: 3, level: 1, name: 'JWT防护', waves: 7, maxHp: 100, startCores: 70, startBandwidth: 55,
+    enemyTypes: ['jwt_brute', 'basic_flood', 'heavy_request'],
+    skills: ['jwt_auth', 'basic_auth', 'subrequest_auth'],
+    desc: '配置JWT认证，防御令牌爆破攻击' },
+  { chapter: 3, level: 2, name: 'SSL加固', waves: 8, maxHp: 100, startCores: 75, startBandwidth: 60,
+    enemyTypes: ['plaintext_attack', 'jwt_brute', 'ssl_bypass'],
+    skills: ['ssl_tls', 'jwt_auth', 'basic_auth'],
+    desc: '启用SSL/TLS，一击必杀明文攻击' },
+  { chapter: 3, level: 3, name: '地理封锁', waves: 8, maxHp: 100, startCores: 80, startBandwidth: 60,
+    enemyTypes: ['scraper', 'plaintext_attack', 'jwt_brute', 'heavy_request'],
+    skills: ['geoip', 'secure_link', 'ssl_tls'],
+    desc: '地理封锁和安全链接，防御爬虫攻击' },
+  { chapter: 3, level: 4, name: '链接安全', waves: 9, maxHp: 100, startCores: 80, startBandwidth: 65,
+    enemyTypes: ['scraper', 'ssl_bypass', 'jwt_brute', 'plaintext_attack'],
+    skills: ['secure_link', 'subrequest_auth', 'geoip', 'ssl_tls'],
+    desc: '安全链接验证，完全免疫盗链攻击' },
+  { chapter: 3, level: 5, name: '安全要塞', waves: 10, maxHp: 100, startCores: 85, startBandwidth: 70,
+    enemyTypes: ['jwt_brute', 'ssl_bypass', 'plaintext_attack', 'scraper', 'heavy_request'],
+    skills: ['jwt_auth', 'ssl_tls', 'geoip', 'secure_link', 'subrequest_auth'],
+    desc: '在有限资源下抵御JWT爆破和SSL绕过，核心血量>30%' },
+
+  // Chapter 4: High Availability
+  { chapter: 4, level: 1, name: '故障转移', waves: 8, maxHp: 100, startCores: 90, startBandwidth: 70,
+    enemyTypes: ['elite_ddos', 'jwt_brute', 'heavy_request', 'conn_exhaust'],
+    skills: ['upstream_failover', 'dynamic_upstream', 'websocket'],
+    desc: '配置故障转移，应对精英DDoS攻击' },
+  { chapter: 4, level: 2, name: '动态配置', waves: 9, maxHp: 100, startCores: 95, startBandwidth: 75,
+    enemyTypes: ['elite_ddos', 'ssl_bypass', 'jwt_brute', 'scraper'],
+    skills: ['dynamic_upstream', 'grpc_proxy', 'http2_tls'],
+    desc: '动态上游配置，实时调整负载均衡' },
+  { chapter: 4, level: 3, name: 'gRPC防护', waves: 10, maxHp: 100, startCores: 100, startBandwidth: 80,
+    enemyTypes: ['elite_ddos', 'plaintext_attack', 'heavy_request', 'cache_bypass'],
+    skills: ['grpc_proxy', 'websocket', 'upstream_hc'],
+    desc: 'gRPC代理配置，对精英敌人造成额外伤害' },
+  { chapter: 4, level: 4, name: '高可用架构', waves: 12, maxHp: 100, startCores: 100, startBandwidth: 85,
+    enemyTypes: ['elite_ddos', 'jwt_brute', 'ssl_bypass', 'scraper', 'heavy_request'],
+    skills: ['upstream_failover', 'dynamic_upstream', 'grpc_proxy', 'upstream_hc'],
+    desc: '综合高可用架构，应对持续高压攻击' },
+  { chapter: 4, level: 5, name: '最终要塞', waves: 15, maxHp: 100, startCores: 110, startBandwidth: 90,
+    enemyTypes: ['elite_ddos', 'jwt_brute', 'ssl_bypass', 'plaintext_attack', 'scraper', 'heavy_request', 'conn_exhaust'],
+    skills: ['upstream_failover', 'dynamic_upstream', 'websocket', 'grpc_proxy', 'http2_tls', 'upstream_hc'],
+    desc: '抵御15波包含所有敌人类型的连续攻击，综合性最终关卡' }
+];
+
+var CHAPTERS = [
+  { id: 1, name: '基础部署', diff: 'easy', diffLabel: '简单', icon: '🔧', desc: '学习部署基础Nginx服务器，应对单一类型低强度攻击' },
+  { id: 2, name: '性能调优', diff: 'medium', diffLabel: '中等', icon: '⚡', desc: '引入缓存、负载均衡、线程池等性能调优技能' },
+  { id: 3, name: '安全加固', diff: 'hard', diffLabel: '困难', icon: '🔒', desc: '应用JWT认证、SSL/TLS、速率限制等安全技能' },
+  { id: 4, name: '高可用架构', diff: 'expert', diffLabel: '专家', icon: '🏗️', desc: '综合运用健康检查、动态上游、故障转移等高级技能' }
+];

@@ -1,0 +1,82 @@
+{
+  "project": "Nginx Learning Game",
+  "branchName": "ralph/nginx-learning-game-mvp",
+  "description": "Turn the current Nginx tower-defense shell into a real beginner learning game with interactive lessons, validation feedback, and externalized lesson content.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Complete the route-matching lesson",
+      "description": "As a beginner, I want the route-matching lesson to validate which location wins so that I understand how Nginx chooses handlers.",
+      "acceptanceCriteria": [
+        "Lesson 3 is interactive instead of scaffolded",
+        "/api/users is validated against an API handler",
+        "/assets/app.js is validated against a static handler",
+        "Feedback explains why the chosen location matched",
+        "Typecheck passes"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Implemented validateLocationMatch in learning-mode.js and promoted lesson 3 to interactive with starter config."
+    },
+    {
+      "id": "US-002",
+      "title": "Complete the forwarded-IP and Basic Auth lessons",
+      "description": "As a beginner, I want lessons for forwarded IP and Basic Auth to validate realistic proxy and access-control behavior so that I learn common production patterns.",
+      "acceptanceCriteria": [
+        "Lessons 6 and 7 are interactive instead of scaffolded",
+        "Real-IP lesson validates X-Forwarded-For chain preservation and Host forwarding",
+        "Basic Auth lesson validates /admin/ protection without locking the public site",
+        "Validation feedback calls out common mistakes, not just pass/fail",
+        "Typecheck passes"
+      ],
+      "priority": 2,
+      "passes": true,
+      "notes": "Implemented validateRealIp and validateBasicAuth, plus starter configs for lessons 6 and 7."
+    },
+    {
+      "id": "US-003",
+      "title": "Complete the buffering and cache lessons",
+      "description": "As a beginner, I want lessons for buffering and cache behavior to show concrete tradeoffs so that I can connect config changes to latency and cache-hit outcomes.",
+      "acceptanceCriteria": [
+        "Lessons 9 and 10 are interactive instead of scaffolded",
+        "Buffering lesson distinguishes streaming and download behavior",
+        "Cache lesson validates cache zone setup, anonymous caching, and logged-in bypass behavior",
+        "Metrics panel shows lesson-specific outputs for both lessons",
+        "Typecheck passes"
+      ],
+      "priority": 3,
+      "passes": true,
+      "notes": "Implemented validateBuffering and validateCache and promoted lessons 9 and 10 to interactive."
+    },
+    {
+      "id": "US-004",
+      "title": "Load lesson data from an external bundle",
+      "description": "As a maintainer, I want the runtime to accept lesson content from external files so that lesson content can evolve without rewriting the runtime logic.",
+      "acceptanceCriteria": [
+        "learning-mode.js loads lesson content from content/lessons/index.js when available",
+        "Runtime falls back to built-in lesson definitions if the external bundle is missing",
+        "External lesson records can be normalized into the current lesson runtime shape",
+        "Existing lesson map and screen rendering still work after loading external content",
+        "Typecheck passes"
+      ],
+      "priority": 4,
+      "passes": true,
+      "notes": "Added external lesson bundle loading, normalization, lesson-map refresh, and visible-screen refresh logic."
+    },
+    {
+      "id": "US-005",
+      "title": "Publish the 10-lesson MVP bundle",
+      "description": "As a maintainer, I want all 10 MVP lessons represented in a lesson bundle so that the prototype is content-driven and easier to expand.",
+      "acceptanceCriteria": [
+        "Add content/lessons/index.js",
+        "The file exports all 10 MVP lessons",
+        "The bundle includes lesson title, summary, scenario, objectives, source skills, and initial config",
+        "The runtime can render the loaded lessons without manual edits to the built-in lesson list",
+        "Typecheck passes"
+      ],
+      "priority": 5,
+      "passes": true,
+      "notes": "Published a 10-lesson external bundle in content/lessons/index.js with interactive lesson records."
+    }
+  ]
+}

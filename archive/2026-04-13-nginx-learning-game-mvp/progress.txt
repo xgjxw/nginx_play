@@ -1,0 +1,9 @@
+# Nginx Learning Game MVP
+
+- Bootstrapped a lesson-mode runtime inside the existing HTML shell.
+- Replaced auto-start of the old combat flow with menu-first lesson navigation.
+- Implemented interactive validators for lessons 1, 2, 4, 5, and 8.
+- Added external lesson bundle loading hooks in learning-mode.js.
+- Implemented the remaining lesson validators for lessons 3, 6, 7, 9, and 10.
+- Promoted all 10 MVP lessons to interactive status.
+- Published content/lessons/index.js so the runtime can load lesson data externally with a built-in fallback.

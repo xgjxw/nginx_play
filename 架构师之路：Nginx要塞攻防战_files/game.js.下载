@@ -1,0 +1,1132 @@
+// ===== GAME STATE =====
+var G = {
+  state: 'idle', // idle, prep, battle, paused, gameover, victory
+  level: null, chapter: 1, levelIdx: 0,
+  hp: 100, maxHp: 100, cores: 50, bandwidth: 30,
+  wave: 0, score: 0,
+  servers: [], enemies: [], bullets: [], particles: [],
+  selectedServer: null, draggingType: null,
+  waveEnemies: [], spawnQueue: [], spawnTimer: 0,
+  frameId: null, lastTime: 0,
+  globalEffects: {},
+  blockedSpawns: 0,
+  canvas: null, ctx: null,
+  pCanvas: null, pCtx: null,
+  gridCells: [], // {x,y,w,h,occupied}
+  paths: [], // enemy paths from spawn to core
+  spawnPoints: [], corePos: {x:0,y:0},
+  waveStats: { killed: 0, leaked: 0, dmgDealt: 0 }
+};
+
+// ===== GRID & MAP =====
+var CELL_SIZE = 64;
+var GRID_COLS = 12, GRID_ROWS = 9;
+
+function initMap() {
+  var canvas = G.canvas;
+  var W = canvas.width, H = canvas.height;
+  G.corePos = { x: W/2, y: H/2 };
+
+  // Build grid
+  var offX = (W - GRID_COLS * CELL_SIZE) / 2;
+  var offY = (H - GRID_ROWS * CELL_SIZE) / 2 + 26;
+  G.gridCells = [];
+  for (var r = 0; r < GRID_ROWS; r++) {
+    for (var c = 0; c < GRID_COLS; c++) {
+      G.gridCells.push({
+        x: offX + c * CELL_SIZE, y: offY + r * CELL_SIZE,
+        w: CELL_SIZE, h: CELL_SIZE,
+        col: c, row: r, occupied: false, serverId: null
+      });
+    }
+  }
+
+  // Spawn points at edges
+  G.spawnPoints = [
+    { x: offX - 40, y: H/2 },
+    { x: W - offX + 40, y: H/2 },
+    { x: W/2, y: offY - 40 },
+    { x: W/2, y: offY + GRID_ROWS * CELL_SIZE + 40 }
+  ];
+
+  // Paths: straight lines from each spawn to core
+  G.paths = G.spawnPoints.map(function(sp) {
+    return buildPath(sp, G.corePos, W, H, offX, offY);
+  });
+}
+
+function buildPath(from, to, W, H, offX, offY) {
+  // Simple waypoint path: from -> midpoint -> core
+  var mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+  return [from, mid, to];
+}
+
+function getCellAt(x, y) {
+  for (var i = 0; i < G.gridCells.length; i++) {
+    var c = G.gridCells[i];
+    if (x >= c.x && x < c.x + c.w && y >= c.y && y < c.y + c.h) return c;
+  }
+  return null;
+}
+
+// ===== SERVER =====
+var _serverId = 0;
+function createServer(typeId, cell) {
+  var type = SKILLS_DATA.serverTypes.find(function(t){ return t.id === typeId; });
+  if (!type) return null;
+  var s = {
+    id: ++_serverId,
+    typeId: typeId,
+    x: cell.x + cell.w/2, y: cell.y + cell.h/2,
+    cell: cell,
+    hp: type.hp, maxHp: type.hp,
+    atk: type.atk, range: type.range, atkSpeed: type.atkSpeed,
+    color: type.color, icon: type.icon, name: type.name,
+    modules: [], // applied skill ids
+    atkCooldown: 0,
+    hpRegenTimer: 0,
+    waveAtkBonus: 0,
+    flash: 0, // red flash timer
+    glow: 0,  // green glow timer
+    shake: 0,
+    auraAnim: 0
+  };
+  applyGlobalEffects(s);
+  return s;
+}
+
+function applyGlobalEffects(s) {
+  var ge = G.globalEffects;
+  if (ge.globalHpBonus) { s.hp += ge.globalHpBonus; s.maxHp += ge.globalHpBonus; }
+  if (ge.globalRangeBonus) s.range += ge.globalRangeBonus;
+  if (ge.globalAtkSpeedMult) s.atkSpeed *= ge.globalAtkSpeedMult;
+}
+
+function applyModule(server, moduleId) {
+  var mod = SKILLS_DATA.modules.find(function(m){ return m.id === moduleId; });
+  if (!mod) return false;
+  if (server.modules.indexOf(moduleId) >= 0) return false;
+  if (G.bandwidth < mod.cost) return false;
+  G.bandwidth -= mod.cost;
+  server.modules.push(moduleId);
+  var e = mod.effect;
+  if (e.atkSpeedMult) server.atkSpeed *= e.atkSpeedMult;
+  if (e.atkMult && !e.vsType && !e.vsCategory && !e.vsRarity) server.atk = Math.floor(server.atk * e.atkMult);
+  if (e.rangeBonus) server.range += e.rangeBonus;
+  if (e.hpBonus) { server.hp += e.hpBonus; server.maxHp += e.hpBonus; }
+  server.auraAnim = 60;
+  updateHUD();
+  return true;
+}
+
+function getServerEffectiveAtk(server, enemy) {
+  var atk = server.atk * (1 + server.waveAtkBonus);
+  server.modules.forEach(function(mid) {
+    var mod = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+    if (!mod) return;
+    var e = mod.effect;
+    if (e.atkMult && e.vsType && enemy.typeId === e.vsType) atk *= e.atkMult;
+    if (e.atkMult && e.vsCategory && ENEMY_TYPES[enemy.typeId] && ENEMY_TYPES[enemy.typeId].category === e.vsCategory) atk *= e.atkMult;
+    if (e.atkMult && e.vsRarity && ENEMY_TYPES[enemy.typeId] && ENEMY_TYPES[enemy.typeId].rarity === e.vsRarity) atk *= e.atkMult;
+    if (e.instakillType && enemy.typeId === e.instakillType) atk = enemy.hp * 10;
+    if (e.unlocksVsType && enemy.typeId === e.unlocksVsType) atk *= 2;
+    if (e.immuneType && enemy.typeId === e.immuneType) atk = 0; // immune means server is immune, not enemy
+  });
+  // Global slice bonus
+  if (G.globalEffects.heavyDmgBonus && ENEMY_TYPES[enemy.typeId] && ENEMY_TYPES[enemy.typeId].id === 'heavy_request') {
+    atk *= (1 + G.globalEffects.heavyDmgBonus);
+  }
+  // Security server bonus
+  if (G.globalEffects.securityAtkMult && server.typeId === 'security') atk *= G.globalEffects.securityAtkMult;
+  return Math.floor(atk);
+}
+
+function canServerHitEnemy(server, enemy) {
+  var type = ENEMY_TYPES[enemy.typeId];
+  if (!type) return true;
+  // Check if enemy requires a skill
+  if (type.requiresSkill) {
+    var hasSkill = server.modules.indexOf(type.requiresSkill) >= 0;
+    if (!hasSkill) return false;
+  }
+  return true;
+}
+
+// ===== ENEMY MOVEMENT =====
+var _enemyId = 0;
+function spawnEnemy(def, pathIdx) {
+  var type = ENEMY_TYPES[def.typeId];
+  if (!type) return;
+  var pi = pathIdx % G.paths.length;
+  // Skip blocked spawns
+  if (G.blockedSpawns > 0 && pi < G.blockedSpawns) pi = G.blockedSpawns % G.paths.length;
+  var path = G.paths[pi];
+  G.enemies.push({
+    id: ++_enemyId,
+    typeId: def.typeId,
+    x: path[0].x, y: path[0].y,
+    hp: def.hp, maxHp: def.maxHp,
+    speed: def.speed,
+    dmg: def.dmg,
+    reward: def.reward,
+    path: path,
+    pathIdx: 0,
+    color: type.color,
+    icon: type.icon,
+    frozen: 0,
+    flash: 0,
+    dead: false
+  });
+}
+
+function moveEnemy(e, dt) {
+  if (e.frozen > 0) { e.frozen -= dt * 1000; return; }
+  var target = e.path[e.pathIdx + 1];
+  if (!target) {
+    // Reached core
+    G.hp = Math.max(0, G.hp - e.dmg);
+    G.waveStats.leaked++;
+    e.dead = true;
+    updateHUD();
+    spawnParticles(G.corePos.x, G.corePos.y, '#ef4444', 8);
+    if (G.hp <= 0) triggerGameOver();
+    return;
+  }
+  var dx = target.x - e.x, dy = target.y - e.y;
+  var dist = Math.sqrt(dx*dx + dy*dy);
+  var step = e.speed * dt;
+  if (dist <= step) {
+    e.x = target.x; e.y = target.y;
+    e.pathIdx++;
+  } else {
+    e.x += dx/dist * step;
+    e.y += dy/dist * step;
+  }
+}
+
+// ===== COMBAT =====
+function updateServers(dt) {
+  G.servers.forEach(function(s) {
+    if (s.flash > 0) s.flash -= dt * 1000;
+    if (s.glow > 0) s.glow -= dt * 1000;
+    if (s.auraAnim > 0) s.auraAnim--;
+    if (s.shake > 0) s.shake -= dt * 1000;
+
+    // HP regen
+    var regenMod = s.modules.find ? s.modules.find(function(mid){
+      var m = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+      return m && m.effect && m.effect.hpRegen;
+    }) : null;
+    if (regenMod) {
+      s.hpRegenTimer += dt * 1000;
+      var m = SKILLS_DATA.modules.find(function(m){ return m.id === regenMod; });
+      if (s.hpRegenTimer >= 5000) {
+        s.hp = Math.min(s.maxHp, s.hp + m.effect.hpRegen);
+        s.hpRegenTimer = 0;
+      }
+    }
+
+    // Attack cooldown
+    if (s.atkCooldown > 0) { s.atkCooldown -= dt; return; }
+
+    // Find targets in range
+    var targets = G.enemies.filter(function(e) {
+      if (e.dead) return false;
+      var dx = e.x - s.x, dy = e.y - s.y;
+      return Math.sqrt(dx*dx + dy*dy) <= s.range;
+    });
+    if (targets.length === 0) return;
+
+    // Multi-target
+    var multiTarget = 1;
+    s.modules.forEach(function(mid) {
+      var mod = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+      if (mod && mod.effect.multiTarget) multiTarget = mod.effect.multiTarget;
+    });
+
+    var attacked = targets.slice(0, multiTarget);
+    attacked.forEach(function(enemy) {
+      if (!canServerHitEnemy(s, enemy)) return;
+      var dmg = getServerEffectiveAtk(s, enemy);
+      enemy.hp -= dmg;
+      enemy.flash = 200;
+      G.waveStats.dmgDealt += dmg;
+      spawnDamageNumber(enemy.x, enemy.y, dmg);
+
+      // Freeze effect
+      s.modules.forEach(function(mid) {
+        var mod = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+        if (!mod) return;
+        if (mod.effect.freezeChance && Math.random() < mod.effect.freezeChance) {
+          enemy.frozen = mod.effect.freezeDuration || 2000;
+        }
+      });
+
+      // Bullet
+      G.bullets.push({ x: s.x, y: s.y, tx: enemy.x, ty: enemy.y, color: s.color, life: 1 });
+
+      if (enemy.hp <= 0) {
+        killEnemy(enemy, s);
+      }
+    });
+
+    // Slow aura
+    s.modules.forEach(function(mid) {
+      var mod = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+      if (!mod || !mod.effect.slowAura) return;
+      G.enemies.forEach(function(e) {
+        if (e.dead) return;
+        var dx = e.x - s.x, dy = e.y - s.y;
+        if (Math.sqrt(dx*dx+dy*dy) <= (mod.effect.auraRange || 100)) {
+          e.speed = ENEMY_TYPES[e.typeId].speed * (1 - mod.effect.slowAura);
+        }
+      });
+    });
+
+    s.atkCooldown = 1 / s.atkSpeed;
+  });
+}
+
+function killEnemy(enemy, killer) {
+  enemy.dead = true;
+  G.cores = (G.cores || 0); // cores already tracked
+  G.score += enemy.reward * 10;
+  G.cores += enemy.reward;
+  G.waveStats.killed++;
+  spawnParticles(enemy.x, enemy.y, enemy.color, 12);
+  updateHUD();
+
+  // Cache clone effect
+  if (killer) {
+    killer.modules.forEach(function(mid) {
+      var mod = SKILLS_DATA.modules.find(function(m){ return m.id === mid; });
+      if (mod && mod.effect.cacheClone) {
+        // Fire at nearest other enemy
+        var nearest = G.enemies.filter(function(e){ return !e.dead && e.id !== enemy.id; })
+          .sort(function(a,b){
+            var da = Math.hypot(a.x-killer.x, a.y-killer.y);
+            var db = Math.hypot(b.x-killer.x, b.y-killer.y);
+            return da - db;
+          })[0];
+        if (nearest) {
+          nearest.hp -= killer.atk;
+          G.bullets.push({ x: enemy.x, y: enemy.y, tx: nearest.x, ty: nearest.y, color: '#10b981', life: 1 });
+          if (nearest.hp <= 0) killEnemy(nearest, null);
+        }
+      }
+    });
+  }
+}
+
+function damageServer(server, dmg) {
+  server.hp -= dmg;
+  server.flash = 400;
+  server.shake = 300;
+  if (server.hp <= 0) {
+    server.hp = 0;
+    // Failover: transfer range to adjacent server
+    var hasFailover = server.modules.some(function(mid){ return mid === 'upstream_failover'; });
+    if (hasFailover) {
+      var adj = G.servers.filter(function(s){ return s.id !== server.id && Math.hypot(s.x-server.x, s.y-server.y) < 150; })[0];
+      if (adj) { adj.range += 40; adj.glow = 1000; }
+    }
+    removeServer(server);
+  }
+}
+
+function hideConfigPanel() {
+  var panel = document.getElementById('config-panel');
+  panel.classList.remove('show');
+}
+
+function showConfigPanel() {
+  var panel = document.getElementById('config-panel');
+  panel.classList.add('show');
+}
+
+function removeServer(server) {
+  if (server.cell) { server.cell.occupied = false; server.cell.serverId = null; }
+  G.servers = G.servers.filter(function(s){ return s.id !== server.id; });
+  if (G.selectedServer && G.selectedServer.id === server.id) {
+    G.selectedServer = null;
+    hideConfigPanel();
+  }
+}
+
+// ===== PARTICLES =====
+function spawnParticles(x, y, color, count) {
+  for (var i = 0; i < count; i++) {
+    var angle = Math.random() * Math.PI * 2;
+    var speed = 60 + Math.random() * 80;
+    G.particles.push({
+      x: x, y: y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      color: color, life: 1, maxLife: 0.6 + Math.random() * 0.4,
+      size: 3 + Math.random() * 4
+    });
+  }
+}
+
+function spawnDamageNumber(x, y, dmg) {
+  var el = document.createElement('div');
+  el.className = 'damage-number';
+  el.textContent = '-' + dmg;
+  el.style.left = (x - 15) + 'px';
+  el.style.top = (y - 20) + 'px';
+  document.getElementById('screen-game').appendChild(el);
+  setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 1000);
+}
+
+// ===== RENDER =====
+function render() {
+  var canvas = G.canvas, ctx = G.ctx;
+  var W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Background grid
+  ctx.strokeStyle = 'rgba(59,130,246,0.08)';
+  ctx.lineWidth = 1;
+  for (var x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (var y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // Grid cells
+  G.gridCells.forEach(function(cell) {
+    ctx.strokeStyle = cell.occupied ? 'rgba(59,130,246,0.15)' : 'rgba(59,130,246,0.12)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(cell.x+1, cell.y+1, cell.w-2, cell.h-2);
+    if (!cell.occupied) {
+      ctx.fillStyle = 'rgba(59,130,246,0.03)';
+      ctx.fillRect(cell.x+1, cell.y+1, cell.w-2, cell.h-2);
+    }
+  });
+
+  // Paths (subtle)
+  G.paths.forEach(function(path) {
+    ctx.strokeStyle = 'rgba(239,68,68,0.12)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,8]);
+    ctx.beginPath();
+    path.forEach(function(p,i){ i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y); });
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+
+  // Core
+  var cp = G.corePos;
+  var coreGlow = 20 + Math.sin(Date.now()/600)*8;
+  ctx.save();
+  ctx.shadowColor = '#f8fafc'; ctx.shadowBlur = coreGlow;
+  ctx.fillStyle = 'rgba(248,250,252,0.9)';
+  ctx.beginPath(); ctx.arc(cp.x, cp.y, 18, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  // HP ring
+  var hpRatio = G.hp / G.maxHp;
+  ctx.strokeStyle = hpRatio > 0.5 ? '#10b981' : hpRatio > 0.25 ? '#f59e0b' : '#ef4444';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(cp.x, cp.y, 24, -Math.PI/2, -Math.PI/2 + Math.PI*2*hpRatio); ctx.stroke();
+
+  // Servers
+  G.servers.forEach(function(s) {
+    ctx.save();
+    var sx = s.x, sy = s.y;
+    if (s.shake > 0) { sx += (Math.random()-0.5)*6; sy += (Math.random()-0.5)*6; }
+
+    // Range circle (when selected)
+    if (G.selectedServer && G.selectedServer.id === s.id) {
+      ctx.strokeStyle = 'rgba(59,130,246,0.3)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4,4]);
+      ctx.beginPath(); ctx.arc(sx, sy, s.range, 0, Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Aura animation
+    if (s.auraAnim > 0) {
+      var auraR = (60 - s.auraAnim) * 2;
+      ctx.strokeStyle = 'rgba(16,185,129,' + (s.auraAnim/60) + ')';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(sx, sy, auraR, 0, Math.PI*2); ctx.stroke();
+    }
+
+    // Glow
+    if (s.glow > 0) { ctx.shadowColor = '#10b981'; ctx.shadowBlur = 20; }
+    else if (s.flash > 0) { ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 20; }
+    else { ctx.shadowColor = s.color; ctx.shadowBlur = 10; }
+
+    // Body
+    ctx.fillStyle = s.flash > 0 ? '#ef4444' : s.color;
+    ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI*2); ctx.stroke();
+
+    // Icon
+    ctx.shadowBlur = 0;
+    ctx.font = '14px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(s.icon, sx, sy);
+
+    // HP bar
+    var bw = 36, bh = 4;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(sx-bw/2, sy+22, bw, bh);
+    ctx.fillStyle = s.hp/s.maxHp > 0.5 ? '#10b981' : '#ef4444';
+    ctx.fillRect(sx-bw/2, sy+22, bw*(s.hp/s.maxHp), bh);
+
+    ctx.restore();
+  });
+
+  // Enemies
+  G.enemies.forEach(function(e) {
+    if (e.dead) return;
+    ctx.save();
+    if (e.flash > 0) { ctx.shadowColor = '#fff'; ctx.shadowBlur = 12; }
+    ctx.fillStyle = e.flash > 0 ? '#fff' : e.color;
+    ctx.beginPath(); ctx.arc(e.x, e.y, 12, 0, Math.PI*2); ctx.fill();
+    ctx.font = '10px serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(e.icon, e.x, e.y);
+    // HP bar
+    var bw = 24;
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(e.x-bw/2, e.y-18, bw, 3);
+    ctx.fillStyle = '#ef4444'; ctx.fillRect(e.x-bw/2, e.y-18, bw*(e.hp/e.maxHp), 3);
+    ctx.restore();
+  });
+
+  // Bullets
+  G.bullets = G.bullets.filter(function(b){ return b.life > 0; });
+  G.bullets.forEach(function(b) {
+    ctx.save();
+    ctx.strokeStyle = b.color; ctx.lineWidth = 2; ctx.globalAlpha = b.life;
+    ctx.shadowColor = b.color; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.moveTo(b.x, b.y); ctx.lineTo(b.tx, b.ty); ctx.stroke();
+    ctx.restore();
+    b.life -= 0.15;
+  });
+
+  // Particles
+  var pCtx = G.pCtx;
+  pCtx.clearRect(0, 0, G.pCanvas.width, G.pCanvas.height);
+  G.particles = G.particles.filter(function(p){ return p.life > 0; });
+  G.particles.forEach(function(p) {
+    pCtx.save();
+    pCtx.globalAlpha = p.life;
+    pCtx.fillStyle = p.color;
+    pCtx.shadowColor = p.color; pCtx.shadowBlur = 4;
+    pCtx.beginPath(); pCtx.arc(p.x, p.y, p.size * p.life, 0, Math.PI*2); pCtx.fill();
+    pCtx.restore();
+  });
+}
+
+function updateParticles(dt) {
+  G.particles.forEach(function(p) {
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    p.vy += 60 * dt;
+    p.life -= dt / p.maxLife;
+  });
+}
+
+// ===== GAME LOOP =====
+function gameLoop(ts) {
+  if (G.state !== 'battle') return;
+  var dt = Math.min((ts - G.lastTime) / 1000, 0.05);
+  G.lastTime = ts;
+
+  // Spawn enemies
+  G.spawnTimer += dt * 1000;
+  var spawned = 0;
+  G.spawnQueue = G.spawnQueue.filter(function(item) {
+    if (item.delay <= G.spawnTimer) {
+      spawnEnemy(item.def, item.pathIdx);
+      spawned++;
+      return false;
+    }
+    return true;
+  });
+
+  // Move enemies
+  G.enemies.forEach(function(e) { if (!e.dead) moveEnemy(e, dt); });
+  G.enemies = G.enemies.filter(function(e) { return !e.dead; });
+
+  // Update servers
+  updateServers(dt);
+  updateParticles(dt);
+
+  render();
+
+  // Check wave complete
+  if (G.spawnQueue.length === 0 && G.enemies.length === 0 && G.state === 'battle') {
+    endWave();
+    return;
+  }
+
+  G.frameId = requestAnimationFrame(gameLoop);
+}
+
+// ===== WAVE MANAGEMENT =====
+function startWave() {
+  if (G.state !== 'prep') return;
+  G.state = 'battle';
+  G.waveStats = { killed: 0, leaked: 0, dmgDealt: 0 };
+  G.spawnTimer = 0;
+
+  var waveDefs = generateWave(G.level, G.wave);
+  G.spawnQueue = waveDefs.map(function(def, i) {
+    return { def: def, pathIdx: i % G.paths.length, delay: def.spawnDelay };
+  });
+  G.enemies = [];
+
+  // Dynamic upstream: wave atk bonus
+  G.servers.forEach(function(s) {
+    if (s.modules.indexOf('dynamic_upstream') >= 0) {
+      s.waveAtkBonus += 0.1;
+    }
+  });
+
+  document.getElementById('btn-start-wave').disabled = true;
+  G.lastTime = performance.now();
+  G.frameId = requestAnimationFrame(gameLoop);
+}
+
+function endWave() {
+  G.state = 'prep';
+  G.wave++;
+  G.score += 100 * G.wave;
+  G.bandwidth = Math.min(G.bandwidth + 15, 999);
+  G.cores = Math.min(G.cores + 10, 999);
+  updateHUD();
+
+  var isLastWave = G.wave >= G.level.waves;
+  showWaveResult(isLastWave);
+}
+
+function showWaveResult(isVictory) {
+  var el = document.getElementById('wave-result');
+  var title = document.getElementById('wave-result-title');
+  var stats = document.getElementById('wave-result-stats');
+  var btn = document.getElementById('btn-next-wave');
+
+  if (isVictory) {
+    title.textContent = '🎉 全部波次完成！';
+    title.style.color = '#10b981';
+    btn.textContent = '查看结果';
+    btn.onclick = function() {
+      el.classList.add('hidden');
+      triggerVictory();
+    };
+  } else {
+    title.textContent = '✅ 第 ' + G.wave + ' 波完成';
+    title.style.color = '#3b82f6';
+    btn.textContent = '下一波';
+    btn.onclick = function() {
+      el.classList.add('hidden');
+      document.getElementById('btn-start-wave').disabled = false;
+      updateWavePreview();
+    };
+  }
+
+  stats.innerHTML =
+    '<div>击杀: <b style="color:#10b981">' + G.waveStats.killed + '</b></div>' +
+    '<div>泄漏: <b style="color:#ef4444">' + G.waveStats.leaked + '</b></div>' +
+    '<div>总伤害: <b style="color:#3b82f6">' + G.waveStats.dmgDealt + '</b></div>';
+
+  el.classList.remove('hidden');
+}
+
+// ===== GAME OVER / VICTORY =====
+function triggerGameOver() {
+  if (G.state === 'gameover') return;
+  G.state = 'gameover';
+  if (G.frameId) cancelAnimationFrame(G.frameId);
+
+  // Amber filter
+  var filter = document.createElement('div');
+  filter.className = 'amber-filter';
+  document.getElementById('screen-game').appendChild(filter);
+  setTimeout(function() {
+    if (filter.parentNode) filter.parentNode.removeChild(filter);
+    showScreen('gameover');
+    document.getElementById('gameover-stats').innerHTML =
+      '<span>波次: ' + G.wave + '/' + G.level.waves + '</span>' +
+      '<span>分数: ' + G.score + '</span>';
+  }, 1500);
+}
+
+function triggerVictory() {
+  G.state = 'victory';
+  var stars = calcStars();
+  saveProgress(stars);
+
+  // Submit score
+  var pName = localStorage.getItem('playerName') || 'Anonymous';
+  var scoreEntry = { player_name: pName, score: G.score, chapter: G.chapter, level: G.levelIdx + 1, stars: stars };
+  
+  // Save to local leaderboard
+  var localScores = JSON.parse(localStorage.getItem('localLeaderboard') || '[]');
+  localScores.push(scoreEntry);
+  localScores.sort(function(a, b) { return b.score - a.score; });
+  localScores = localScores.slice(0, 20);
+  localStorage.setItem('localLeaderboard', JSON.stringify(localScores));
+  
+  // Try API submission (optional)
+  if (window._api && window._api.submitScore) {
+    window._api.submitScore('nginx-fortress', G.score, {
+      playerName: pName,
+      meta: { chapter: G.chapter, level: G.levelIdx + 1, stars: stars, hp: G.hp }
+    }).catch(function(e){ console.log('Score saved locally only'); });
+  }
+
+  showScreen('victory');
+  document.getElementById('victory-stars').textContent = stars >= 3 ? '⭐⭐⭐' : stars >= 2 ? '⭐⭐☆' : '⭐☆☆';
+  document.getElementById('victory-subtitle').textContent =
+    '第' + G.chapter + '章 第' + (G.levelIdx+1) + '关 · ' + G.level.name;
+
+  var statsEl = document.getElementById('victory-stats');
+  statsEl.innerHTML =
+    '<div class="victory-stat"><div class="victory-stat-val">' + G.score + '</div><div class="victory-stat-label">总分</div></div>' +
+    '<div class="victory-stat"><div class="victory-stat-val">' + G.hp + '%</div><div class="victory-stat-label">核心血量</div></div>' +
+    '<div class="victory-stat"><div class="victory-stat-val">' + stars + '/3</div><div class="victory-stat-label">星级</div></div>';
+
+  // Particle celebration
+  for (var i = 0; i < 5; i++) {
+    setTimeout(function() {
+      spawnParticles(G.corePos.x || 400, G.corePos.y || 300, '#10b981', 20);
+    }, i * 200);
+  }
+
+  AppInsight.trackEvent('level_complete', { chapter: G.chapter, level: G.levelIdx+1, stars: stars, score: G.score });
+}
+
+function calcStars() {
+  if (G.hp >= 80 && G.waveStats.leaked === 0) return 3;
+  if (G.hp >= 50) return 2;
+  return 1;
+}
+
+// ===== PROGRESS =====
+function saveProgress(stars) {
+  var key = 'nginx_progress';
+  var prog = JSON.parse(localStorage.getItem(key) || '{}');
+  var lk = G.chapter + '_' + (G.levelIdx + 1);
+  prog[lk] = Math.max(prog[lk] || 0, stars);
+  // Unlock next level
+  var nextLevelIdx = G.levelIdx + 1;
+  var nextChapter = G.chapter;
+  if (nextLevelIdx >= 5) { nextLevelIdx = 0; nextChapter++; }
+  var nk = nextChapter + '_' + (nextLevelIdx + 1);
+  if (!prog[nk]) prog[nk] = 0; // 0 = unlocked but not completed
+  localStorage.setItem(key, JSON.stringify(prog));
+
+  // Skill points
+  var sp = parseInt(localStorage.getItem('skillPoints') || '0');
+  sp += stars;
+  localStorage.setItem('skillPoints', sp);
+}
+
+function isLevelUnlocked(chapter, levelNum) {
+  if (chapter === 1 && levelNum === 1) return true;
+  var prog = JSON.parse(localStorage.getItem('nginx_progress') || '{}');
+  var key = chapter + '_' + levelNum;
+  return prog[key] !== undefined;
+}
+
+function getLevelStars(chapter, levelNum) {
+  var prog = JSON.parse(localStorage.getItem('nginx_progress') || '{}');
+  return prog[chapter + '_' + levelNum] || 0;
+}
+
+// ===== INIT LEVEL =====
+function startLevel(chapter, levelIdx) {
+  G.chapter = chapter;
+  G.levelIdx = levelIdx;
+  var globalLevelIdx = (chapter - 1) * 5 + levelIdx;
+  G.level = LEVELS[globalLevelIdx];
+  if (!G.level) return;
+
+  G.hp = G.level.maxHp; G.maxHp = G.level.maxHp;
+  G.cores = G.level.startCores; G.bandwidth = G.level.startBandwidth;
+  G.wave = 0; G.score = 0;
+  G.servers = []; G.enemies = []; G.bullets = []; G.particles = [];
+  G.selectedServer = null; G.state = 'prep';
+  G.blockedSpawns = 0;
+
+  // Apply global tech effects
+  G.globalEffects = {};
+  var unlockedTech = JSON.parse(localStorage.getItem('unlockedTech') || '[]');
+  unlockedTech.forEach(function(tid) {
+    var tech = SKILLS_DATA.globalTech.find(function(t){ return t.id === tid; });
+    if (!tech) return;
+    var e = tech.effect;
+    if (e.startCoresBonus) G.cores += e.startCoresBonus;
+    if (e.globalHpBonus) G.globalEffects.globalHpBonus = (G.globalEffects.globalHpBonus||0) + e.globalHpBonus;
+    if (e.globalRangeBonus) G.globalEffects.globalRangeBonus = (G.globalEffects.globalRangeBonus||0) + e.globalRangeBonus;
+    if (e.globalAtkSpeedMult) G.globalEffects.globalAtkSpeedMult = (G.globalEffects.globalAtkSpeedMult||1) * e.globalAtkSpeedMult;
+    if (e.blockSpawn) G.blockedSpawns += e.blockSpawn;
+    if (e.heavyDmgBonus) G.globalEffects.heavyDmgBonus = (G.globalEffects.heavyDmgBonus||0) + e.heavyDmgBonus;
+    if (e.securityAtkMult) G.globalEffects.securityAtkMult = (G.globalEffects.securityAtkMult||1) * e.securityAtkMult;
+  });
+
+  showScreen('game');
+  resizeCanvas();
+  initMap();
+  updateHUD();
+  updateServerList();
+  updateWavePreview();
+  document.getElementById('btn-start-wave').disabled = false;
+  document.getElementById('wave-result').classList.add('hidden');
+  hideConfigPanel();
+
+  // Show tutorial tip
+  showGameTip('💡 操作提示：点击右侧服务器图标，然后点击网格部署 | 部署后点击服务器配置技能 | 点击「开始波次」迎战敌人');
+
+  AppInsight.trackEvent('level_start', { chapter: chapter, level: levelIdx+1 });
+}
+
+// ===== GAME TIP =====
+function showGameTip(text, duration) {
+  var existing = document.querySelector('.game-tip');
+  if (existing) existing.remove();
+  
+  var tip = document.createElement('div');
+  tip.className = 'game-tip';
+  tip.innerHTML = '<span class="tip-text">' + text + '</span><span class="tip-close">✕</span>';
+  document.getElementById('screen-game').appendChild(tip);
+  
+  tip.querySelector('.tip-close').addEventListener('click', function() {
+    tip.remove();
+  });
+  
+  setTimeout(function() {
+    if (tip.parentNode) tip.remove();
+  }, duration || 8000);
+}
+
+// ===== HUD =====
+function updateHUD() {
+  var l = G.level;
+  document.getElementById('hud-chapter').textContent = G.chapter;
+  document.getElementById('hud-level').textContent = G.levelIdx + 1;
+  document.getElementById('hud-hp').textContent = G.hp;
+  document.getElementById('hud-cores').textContent = G.cores;
+  document.getElementById('hud-bandwidth').textContent = G.bandwidth;
+  document.getElementById('hud-wave').textContent = G.wave;
+  document.getElementById('hud-max-wave').textContent = l ? l.waves : 0;
+  document.getElementById('hud-score').textContent = G.score;
+  var hpPct = Math.max(0, (G.hp / G.maxHp) * 100);
+  var bar = document.getElementById('hp-bar');
+  bar.style.width = hpPct + '%';
+  bar.style.background = hpPct > 50 ? 'linear-gradient(90deg,#10b981,#34d399)' : hpPct > 25 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#ef4444,#f87171)';
+}
+
+function updateServerList() {
+  var list = document.getElementById('server-list');
+  list.innerHTML = '';
+  SKILLS_DATA.serverTypes.forEach(function(type) {
+    var div = document.createElement('div');
+    div.className = 'server-item' + (G.cores < type.cost ? ' disabled' : '');
+    div.innerHTML = '<div class="server-icon">' + type.icon + '</div><div class="server-name">' + type.name + '</div><div class="server-cost">💎' + type.cost + '</div>';
+    div.draggable = true;
+    
+    // Drag support
+    div.addEventListener('dragstart', function(ev) {
+      if (G.cores < type.cost) { ev.preventDefault(); return; }
+      G.draggingType = type.id;
+      ev.dataTransfer.effectAllowed = 'copy';
+      div.classList.add('dragging');
+    });
+    div.addEventListener('dragend', function() { 
+      G.draggingType = null; 
+      div.classList.remove('dragging');
+    });
+    
+    // Click to select for deployment
+    div.addEventListener('click', function() {
+      if (G.cores < type.cost) {
+        showToast('核心资源不足！需要 ' + type.cost + ' 核心', 'error');
+        return;
+      }
+      G.draggingType = type.id;
+      showToast('已选择 ' + type.name + '，点击网格部署', 'info');
+      // Highlight the item
+      list.querySelectorAll('.server-item').forEach(function(item) { item.style.borderColor = ''; });
+      div.style.borderColor = '#10b981';
+    });
+    
+    list.appendChild(div);
+  });
+}
+
+function updateWavePreview() {
+  var el = document.getElementById('wave-preview');
+  if (!G.level) return;
+  var preview = getWavePreview(G.level, G.wave);
+  el.innerHTML = preview.map(function(p) {
+    return '<div class="enemy-preview-chip"><span class="ep-icon">' + (p.enemy ? p.enemy.icon : '?') + '</span><span class="ep-name">' + (p.enemy ? p.enemy.name : p.typeId) + '</span><span class="ep-count">x' + p.count + '</span></div>';
+  }).join('');
+}
+
+// ===== CANVAS RESIZE =====
+function resizeCanvas() {
+  var gameScreen = document.getElementById('screen-game');
+  var sidebar = document.querySelector('.sidebar');
+  var hud = document.querySelector('.hud');
+  var canvas = G.canvas;
+  var pCanvas = G.pCanvas;
+  var W = gameScreen.clientWidth - (sidebar ? sidebar.offsetWidth : 280);
+  var H = gameScreen.clientHeight;
+  canvas.width = W; canvas.height = H;
+  pCanvas.width = W; pCanvas.height = H;
+  if (G.state !== 'idle') initMap();
+}
+
+// ===== DRAG & DROP DEPLOY =====
+function initDragDrop() {
+  var canvas = G.canvas;
+  canvas.addEventListener('dragover', function(ev) {
+    ev.preventDefault();
+    ev.dataTransfer.dropEffect = 'copy';
+    // Highlight cell
+    var rect = canvas.getBoundingClientRect();
+    var cell = getCellAt(ev.clientX - rect.left, ev.clientY - rect.top);
+    render();
+    if (cell && !cell.occupied) {
+      G.ctx.strokeStyle = 'rgba(59,130,246,0.8)';
+      G.ctx.lineWidth = 2;
+      G.ctx.strokeRect(cell.x+2, cell.y+2, cell.w-4, cell.h-4);
+      G.ctx.fillStyle = 'rgba(59,130,246,0.15)';
+      G.ctx.fillRect(cell.x+2, cell.y+2, cell.w-4, cell.h-4);
+    }
+  });
+
+  canvas.addEventListener('drop', function(ev) {
+    ev.preventDefault();
+    if (!G.draggingType) return;
+    var rect = canvas.getBoundingClientRect();
+    var cell = getCellAt(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (!cell || cell.occupied) { showToast('无法在此处部署', 'error'); return; }
+    var type = SKILLS_DATA.serverTypes.find(function(t){ return t.id === G.draggingType; });
+    if (!type || G.cores < type.cost) { showToast('核心资源不足', 'error'); return; }
+    G.cores -= type.cost;
+    var server = createServer(G.draggingType, cell);
+    if (!server) return;
+    cell.occupied = true; cell.serverId = server.id;
+    G.servers.push(server);
+    updateHUD();
+    updateServerList();
+    spawnParticles(server.x, server.y, type.color, 10);
+    showFloatingText(server.x, server.y, type.name);
+    AppInsight.trackEvent('server_deploy', { type: G.draggingType });
+    G.draggingType = null;
+  });
+
+  // Click to deploy or select server
+  canvas.addEventListener('click', function(ev) {
+    var rect = canvas.getBoundingClientRect();
+    var mx = ev.clientX - rect.left, my = ev.clientY - rect.top;
+    
+    // If we have a server type selected for deployment
+    if (G.draggingType && G.state === 'prep') {
+      var cell = getCellAt(mx, my);
+      if (!cell || cell.occupied) {
+        showToast('无法在此处部署，请选择空格子', 'error');
+        return;
+      }
+      var type = SKILLS_DATA.serverTypes.find(function(t){ return t.id === G.draggingType; });
+      if (!type || G.cores < type.cost) {
+        showToast('核心资源不足', 'error');
+        return;
+      }
+      G.cores -= type.cost;
+      var server = createServer(G.draggingType, cell);
+      if (!server) return;
+      cell.occupied = true; cell.serverId = server.id;
+      G.servers.push(server);
+      updateHUD();
+      updateServerList();
+      spawnParticles(server.x, server.y, type.color, 10);
+      showFloatingText(server.x, server.y, type.name);
+      AppInsight.trackEvent('server_deploy', { type: G.draggingType });
+      G.draggingType = null;
+      render();
+      return;
+    }
+    
+    // Otherwise, check if clicking on an existing server
+    var hit = G.servers.find(function(s){ return Math.hypot(s.x-mx, s.y-my) < 22; });
+    if (hit) {
+      G.selectedServer = hit;
+      openConfigPanel(hit);
+    } else {
+      G.selectedServer = null;
+      hideConfigPanel();
+      document.getElementById('btn-sell-server').style.display = 'none';
+    }
+    render();
+  });
+
+  canvas.addEventListener('contextmenu', function(ev) {
+    ev.preventDefault();
+    G.selectedServer = null;
+    hideConfigPanel();
+    document.getElementById('btn-sell-server').style.display = 'none';
+  });
+}
+
+function showFloatingText(x, y, text) {
+  var el = document.createElement('div');
+  el.className = 'damage-number';
+  el.style.color = '#3b82f6';
+  el.style.fontSize = '0.75rem';
+  el.textContent = text;
+  el.style.left = (x - 30) + 'px';
+  el.style.top = (y - 30) + 'px';
+  document.getElementById('screen-game').appendChild(el);
+  setTimeout(function(){ if (el.parentNode) el.parentNode.removeChild(el); }, 1200);
+}
+
+// ===== CONFIG PANEL =====
+function openConfigPanel(server) {
+  showConfigPanel();
+  document.getElementById('config-title').textContent = server.icon + ' ' + server.name;
+  document.getElementById('btn-sell-server').style.display = 'block';
+
+  // Stats
+  var statsEl = document.getElementById('config-stats');
+  statsEl.innerHTML =
+    '<div class="config-stat"><div class="config-stat-label">HP</div><div class="config-stat-val">' + server.hp + '/' + server.maxHp + '</div></div>' +
+    '<div class="config-stat"><div class="config-stat-label">攻击</div><div class="config-stat-val">' + server.atk + '</div></div>' +
+    '<div class="config-stat"><div class="config-stat-label">射程</div><div class="config-stat-val">' + server.range + '</div></div>' +
+    '<div class="config-stat"><div class="config-stat-label">攻速</div><div class="config-stat-val">' + server.atkSpeed.toFixed(1) + '/s</div></div>';
+
+  // Skills
+  var skillsEl = document.getElementById('config-skills');
+  skillsEl.innerHTML = '';
+  var availableSkills = SKILLS_DATA.modules.filter(function(m) {
+    return m.chapter <= G.chapter;
+  });
+  availableSkills.forEach(function(mod) {
+    var isActive = server.modules.indexOf(mod.id) >= 0;
+    var canAfford = G.bandwidth >= mod.cost;
+    var chip = document.createElement('div');
+    chip.className = 'skill-chip' + (isActive ? ' active' : '') + (!canAfford && !isActive ? ' locked' : '');
+    chip.innerHTML =
+      '<div class="skill-chip-name">' + mod.icon + ' ' + mod.name + '</div>' +
+      '<div class="skill-chip-desc">' + mod.desc + '</div>' +
+      '<div class="skill-chip-cost">' + (isActive ? '✅ 已激活' : '⚡' + mod.cost + ' 带宽') + '</div>';
+    if (!isActive) {
+      chip.addEventListener('click', function() {
+        if (applyModule(server, mod.id)) {
+          openConfigPanel(server);
+          render();
+          AppInsight.trackEvent('skill_apply', { skill: mod.id, server: server.typeId });
+        } else {
+          showToast('带宽不足', 'error');
+        }
+      });
+    }
+    skillsEl.appendChild(chip);
+  });
+}
+
+// ===== SCREEN MANAGEMENT =====
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(function(s){ s.classList.remove('active'); });
+  var el = document.getElementById('screen-' + name);
+  if (el) el.classList.add('active');
+  // Circuit transition
+  var t = document.createElement('div');
+  t.className = 'scene-transition';
+  document.body.appendChild(t);
+  setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, 500);
+}
+
+// ===== TOAST =====
+function showToast(msg, type) {
+  var el = document.getElementById('app-toast');
+  el.textContent = msg;
+  el.className = 'app-toast ' + (type || 'info');
+  setTimeout(function(){ el.classList.add('hidden'); }, 2500);
+}
+
+// ===== SELL SERVER =====
+document.getElementById('btn-sell-server').addEventListener('click', function() {
+  if (!G.selectedServer) return;
+  var type = SKILLS_DATA.serverTypes.find(function(t){ return t.id === G.selectedServer.typeId; });
+  var refund = Math.floor(type.cost * 0.6);
+  var ge = G.globalEffects;
+  if (ge.sellRefund) refund = type.cost;
+  G.cores += refund;
+  removeServer(G.selectedServer);
+  G.selectedServer = null;
+  hideConfigPanel();
+  document.getElementById('btn-sell-server').style.display = 'none';
+  updateHUD();
+  updateServerList();
+  render();
+  showToast('服务器已出售，回收 ' + refund + ' 核心', 'success');
+});
+
+document.getElementById('btn-start-wave').addEventListener('click', function() {
+  startWave();
+  AppInsight.trackEvent('wave_start', { wave: G.wave + 1 });
+});
+
+document.getElementById('btn-pause').addEventListener('click', function() {
+  if (G.state === 'battle') {
+    G.state = 'paused';
+    if (G.frameId) cancelAnimationFrame(G.frameId);
+    var overlay = document.createElement('div');
+    overlay.className = 'pause-overlay'; overlay.id = 'pause-overlay';
+    overlay.innerHTML = '<h2>⏸ 暂停</h2><div class="pause-buttons"><button class="btn-game btn-primary" id="btn-resume">继续</button><button class="btn-game btn-secondary" id="btn-pause-menu">主菜单</button></div>';
+    document.getElementById('screen-game').appendChild(overlay);
+    document.getElementById('btn-resume').onclick = function() {
+      overlay.remove(); G.state = 'battle';
+      G.lastTime = performance.now();
+      G.frameId = requestAnimationFrame(gameLoop);
+    };
+    document.getElementById('btn-pause-menu').onclick = function() {
+      overlay.remove(); G.state = 'idle';
+      if (G.frameId) cancelAnimationFrame(G.frameId);
+      showScreen('menu');
+    };
+  }
+});
+
+// ===== INIT =====
+window.addEventListener('DOMContentLoaded', function() {
+  G.canvas = document.getElementById('game-canvas');
+  G.ctx = G.canvas.getContext('2d');
+  // Particle canvas
+  var pCanvas = document.createElement('canvas');
+  pCanvas.id = 'particle-canvas';
+  document.getElementById('screen-game').appendChild(pCanvas);
+  G.pCanvas = pCanvas; G.pCtx = pCanvas.getContext('2d');
+
+  initDragDrop();
+  window.addEventListener('resize', function() {
+    if (document.getElementById('screen-game').classList.contains('active')) resizeCanvas();
+  });
+
+  // 绑定关闭按钮事件
+  document.getElementById('config-close').addEventListener('click', function() {
+    hideConfigPanel();
+    G.selectedServer = null;
+    render();
+  });
+
+  // 强制初始化时隐藏 config-panel
+  var configPanel = document.getElementById('config-panel');
+  if (configPanel) {
+    configPanel.classList.remove('show');
+    configPanel.style.transform = '';
+    configPanel.style.visibility = '';
+  }
+
+  // Default to the menu. The lesson runtime decides what to open.
+  showScreen('menu');
+
+  if (!document.getElementById('lesson-mode-script')) {
+    var lessonScript = document.createElement('script');
+    lessonScript.id = 'lesson-mode-script';
+    lessonScript.src = './learning-mode.js';
+    document.body.appendChild(lessonScript);
+  }
+});

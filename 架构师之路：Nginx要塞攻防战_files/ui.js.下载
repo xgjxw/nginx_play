@@ -1,0 +1,375 @@
+// ===== RUNTIME API =====
+var _api = new RuntimeAPIClient({ timeout: 120000, autoBootstrap: false });
+window._api = _api;
+
+// Mock bootstrap for local mode
+_api.bootstrap = function() {
+  return Promise.resolve({ anon_user_id: 'local-' + Math.random().toString(36).slice(2, 10) });
+};
+
+// ===== MENU NAVIGATION =====
+document.getElementById('btn-start-game').addEventListener('click', function() {
+  AppInsight.trackEvent('button_click', { buttonName: 'start_game' });
+  showScreen('chapter');
+  renderChapterGrid();
+});
+
+document.getElementById('btn-skill-tree').addEventListener('click', function() {
+  AppInsight.trackEvent('button_click', { buttonName: 'skill_tree' });
+  showScreen('skill-tree');
+  renderSkillTree();
+});
+
+document.getElementById('btn-leaderboard-menu').addEventListener('click', function() {
+  AppInsight.trackEvent('button_click', { buttonName: 'leaderboard' });
+  showScreen('leaderboard');
+  loadLeaderboard();
+});
+
+document.getElementById('btn-back-menu').addEventListener('click', function() { showScreen('menu'); });
+document.getElementById('btn-back-chapter').addEventListener('click', function() { showScreen('chapter'); renderChapterGrid(); });
+document.getElementById('btn-back-skill').addEventListener('click', function() { showScreen('menu'); });
+document.getElementById('btn-back-lb').addEventListener('click', function() { showScreen('menu'); });
+
+// ===== CHAPTER GRID =====
+function renderChapterGrid() {
+  var grid = document.getElementById('chapter-grid');
+  grid.innerHTML = '';
+  CHAPTERS.forEach(function(ch) {
+    var unlocked = ch.id === 1 || isLevelUnlocked(ch.id, 1);
+    var card = document.createElement('div');
+    card.className = 'chapter-card' + (unlocked ? '' : ' locked');
+    card.innerHTML =
+      '<div class="chapter-num">第' + ch.id + '章</div>' +
+      '<div class="chapter-name">' + ch.icon + ' ' + ch.name + '</div>' +
+      '<div class="chapter-desc">' + ch.desc + '</div>' +
+      '<span class="chapter-diff diff-' + ch.diff + '">' + ch.diffLabel + '</span>';
+    if (unlocked) {
+      card.addEventListener('click', function() {
+        showScreen('level');
+        document.getElementById('level-screen-title').textContent = '第' + ch.id + '章：' + ch.name;
+        renderLevelGrid(ch.id);
+        AppInsight.trackEvent('chapter_select', { chapter: ch.id });
+      });
+    }
+    grid.appendChild(card);
+  });
+}
+
+// ===== LEVEL GRID =====
+function renderLevelGrid(chapterId) {
+  var grid = document.getElementById('level-grid');
+  grid.innerHTML = '';
+  for (var i = 1; i <= 5; i++) {
+    var unlocked = isLevelUnlocked(chapterId, i);
+    var stars = getLevelStars(chapterId, i);
+    var card = document.createElement('div');
+    card.className = 'level-card' + (unlocked ? '' : ' locked');
+    var starStr = '';
+    for (var s = 1; s <= 3; s++) starStr += s <= stars ? '⭐' : '☆';
+    card.innerHTML = '<div class="level-num">' + i + '</div><div class="level-stars">' + starStr + '</div>';
+    if (unlocked) {
+      (function(ci, li) {
+        card.addEventListener('click', function() {
+          startLevel(ci, li - 1);
+          AppInsight.trackEvent('level_select', { chapter: ci, level: li });
+        });
+      })(chapterId, i);
+    }
+    grid.appendChild(card);
+  }
+}
+
+// ===== GAME OVER / VICTORY BUTTONS =====
+document.getElementById('btn-retry').addEventListener('click', function() {
+  startLevel(G.chapter, G.levelIdx);
+});
+document.getElementById('btn-gameover-menu').addEventListener('click', function() { showScreen('menu'); });
+document.getElementById('btn-victory-menu').addEventListener('click', function() { showScreen('menu'); });
+document.getElementById('btn-next-level').addEventListener('click', function() {
+  var nextIdx = G.levelIdx + 1;
+  var nextChapter = G.chapter;
+  if (nextIdx >= 5) { nextIdx = 0; nextChapter++; }
+  if (nextChapter > 4) { showScreen('menu'); return; }
+  if (isLevelUnlocked(nextChapter, nextIdx + 1)) {
+    startLevel(nextChapter, nextIdx);
+  } else {
+    showScreen('chapter');
+    renderChapterGrid();
+  }
+});
+
+// ===== SKILL TREE =====
+var _skillTab = 'basic';
+var SKILL_TABS = [
+  { id: 'basic', label: '基础配置' },
+  { id: 'performance', label: '性能调优' },
+  { id: 'security', label: '安全加固' },
+  { id: 'advanced', label: '高可用' }
+];
+
+function renderSkillTree() {
+  var sp = parseInt(localStorage.getItem('skillPoints') || '0');
+  document.getElementById('skill-points-display').textContent = sp;
+
+  var tabsEl = document.getElementById('skill-tree-tabs');
+  tabsEl.innerHTML = '';
+  SKILL_TABS.forEach(function(tab) {
+    var btn = document.createElement('button');
+    btn.className = 'skill-tab' + (tab.id === _skillTab ? ' active' : '');
+    btn.textContent = tab.label;
+    btn.addEventListener('click', function() {
+      _skillTab = tab.id;
+      renderSkillTree();
+    });
+    tabsEl.appendChild(btn);
+  });
+
+  var grid = document.getElementById('skill-tree-grid');
+  grid.innerHTML = '';
+  var unlockedTech = JSON.parse(localStorage.getItem('unlockedTech') || '[]');
+
+  // Show global tech for current tab
+  var techs = SKILLS_DATA.globalTech.filter(function(t){ return t.category === _skillTab; });
+  // Also show skill modules for current tab
+  var mods = SKILLS_DATA.modules.filter(function(m){ return m.category === _skillTab; });
+
+  techs.forEach(function(tech) {
+    var isUnlocked = unlockedTech.indexOf(tech.id) >= 0;
+    var sp2 = parseInt(localStorage.getItem('skillPoints') || '0');
+    var canAfford = sp2 >= tech.cost;
+    var node = document.createElement('div');
+    node.className = 'skill-node' + (isUnlocked ? ' unlocked' : (!canAfford ? ' locked' : ''));
+    node.innerHTML =
+      '<div class="skill-node-icon">' + tech.icon + '</div>' +
+      '<div class="skill-node-name">' + tech.name + '</div>' +
+      '<div class="skill-chip-desc" style="font-size:0.65rem;color:var(--c-muted);margin-top:0.2rem">' + tech.desc + '</div>' +
+      '<div class="skill-node-cost">' + (isUnlocked ? '' : '🔑' + tech.cost + '点') + '</div>' +
+      '<div class="skill-node-status">' + (isUnlocked ? '✅ 已解锁' : '') + '</div>';
+    if (!isUnlocked && canAfford) {
+      node.addEventListener('click', function() {
+        var sp3 = parseInt(localStorage.getItem('skillPoints') || '0');
+        if (sp3 < tech.cost) { showToast('技能点不足', 'error'); return; }
+        sp3 -= tech.cost;
+        localStorage.setItem('skillPoints', sp3);
+        unlockedTech.push(tech.id);
+        localStorage.setItem('unlockedTech', JSON.stringify(unlockedTech));
+        showToast('解锁：' + tech.name, 'success');
+        AppInsight.trackEvent('tech_unlock', { tech: tech.id });
+        renderSkillTree();
+      });
+    }
+    grid.appendChild(node);
+  });
+
+  mods.forEach(function(mod) {
+    var node = document.createElement('div');
+    node.className = 'skill-node unlocked';
+    node.style.opacity = '0.7';
+    node.innerHTML =
+      '<div class="skill-node-icon">' + mod.icon + '</div>' +
+      '<div class="skill-node-name">' + mod.name + '</div>' +
+      '<div class="skill-chip-desc" style="font-size:0.65rem;color:var(--c-muted);margin-top:0.2rem">' + mod.desc + '</div>' +
+      '<div class="skill-node-status" style="color:var(--c-blue)">📖 关卡内使用</div>';
+    grid.appendChild(node);
+  });
+}
+
+// ===== LEADERBOARD =====
+function loadLeaderboard() {
+  var list = document.getElementById('lb-list');
+  list.innerHTML = '<div class="lb-loading">加载中...</div>';
+  var savedName = localStorage.getItem('playerName') || '';
+  document.getElementById('player-name-input').value = savedName;
+
+  // Try API first, fallback to local storage
+  _api.getLeaderboard('nginx-fortress', { page_size: 20 }).then(function(data) {
+    AppInsight.trackEvent('request_success', { action: 'leaderboard' });
+    renderLeaderboardList(data.results || []);
+  }).catch(function(e) {
+    console.log('Using local leaderboard:', e.message);
+    // Fallback to local storage
+    var localScores = JSON.parse(localStorage.getItem('localLeaderboard') || '[]');
+    renderLeaderboardList(localScores);
+  });
+}
+
+function renderLeaderboardList(results) {
+  var list = document.getElementById('lb-list');
+  list.innerHTML = '';
+  if (!results || results.length === 0) {
+    list.innerHTML = '<div class="lb-loading">暂无记录，快来成为第一名！</div>';
+    return;
+  }
+  results.forEach(function(entry, idx) {
+    var row = document.createElement('div');
+    var rank = entry.rank || (idx + 1);
+    var rankClass = rank === 1 ? ' top1' : rank === 2 ? ' top2' : rank === 3 ? ' top3' : '';
+    row.className = 'lb-row';
+    row.innerHTML =
+      '<div class="lb-rank' + rankClass + '">' + (rank <= 3 ? ['🥇','🥈','🥉'][rank-1] : '#'+rank) + '</div>' +
+      '<div class="lb-name">' + (entry.player_name || '匿名架构师') + '</div>' +
+      '<div class="lb-score">' + entry.score + '</div>';
+    list.appendChild(row);
+  });
+}
+
+document.getElementById('btn-save-name').addEventListener('click', function() {
+  var name = document.getElementById('player-name-input').value.trim();
+  if (!name) return;
+  localStorage.setItem('playerName', name);
+  showToast('名字已保存：' + name, 'success');
+  AppInsight.trackEvent('button_click', { buttonName: 'save_player_name' });
+});
+
+// ===== SHARE =====
+var _share = new RuntimeShare({
+  modal: {
+    panelMaxWidth: '1000px',
+    previewMaxWidth: '680px',
+    previewMaxHeight: '72vh',
+    portraitPreviewMaxWidth: '360px',
+    portraitPreviewMaxHeight: '78vh'
+  },
+  card: {
+    background: 'linear-gradient(160deg, #0a1628 0%, #0f2040 50%, #0a1628 100%)',
+    accentColor: '#3b82f6',
+    borderColor: 'rgba(59,130,246,0.3)',
+    textColor: '#f8fafc',
+    mutedTextColor: 'rgba(248,250,252,0.6)',
+    surfaceColor: 'rgba(15,30,60,0.8)',
+    portraitWidth: 800,
+    portraitPadding: 32,
+    portraitRadius: 28,
+    showLink: false
+  },
+  qr: { enabled: true, size: 180, background: '#0f172a', colorDark: '#3b82f6', colorLight: '#0f172a' },
+  renderers: { card: buildShareCard }
+});
+
+async function buildShareCard(context, _unused, helpers) {
+  var theme = context.meta.theme;
+  var root = helpers.createPosterRoot(context, {
+    width: 800, padding: 32, radius: 28,
+    styles: {
+      background: theme.background,
+      color: theme.textColor,
+      border: '1px solid ' + theme.borderColor,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '20px'
+    }
+  });
+
+  // Header
+  var header = helpers.createElement('div');
+  helpers.setStyles(header, { display: 'flex', alignItems: 'center', gap: '16px', paddingBottom: '16px', borderBottom: '1px solid ' + theme.borderColor });
+  var logoIcon = helpers.createElement('div', '', '⬡');
+  helpers.setStyles(logoIcon, { fontSize: '2.5rem', color: theme.accentColor });
+  var titleBlock = helpers.createElement('div');
+  var t1 = helpers.createElement('div', '', '架构师之路：Nginx要塞攻防战');
+  helpers.setStyles(t1, { fontSize: '1.2rem', fontWeight: '800', color: theme.textColor });
+  var t2 = helpers.createElement('div', '', context.shareSubtitle);
+  helpers.setStyles(t2, { fontSize: '0.85rem', color: theme.mutedTextColor, marginTop: '4px' });
+  titleBlock.appendChild(t1); titleBlock.appendChild(t2);
+  var badge = helpers.createElement('div', '', context.shareBadge);
+  helpers.setStyles(badge, { marginLeft: 'auto', background: 'rgba(59,130,246,0.2)', border: '1px solid rgba(59,130,246,0.4)', color: theme.accentColor, padding: '6px 14px', borderRadius: '20px', fontSize: '0.85rem', fontWeight: '700' });
+  helpers.appendChildren(header, [logoIcon, titleBlock, badge]);
+  root.appendChild(header);
+
+  // Stats from page
+  var statsClone = helpers.cloneNodeForShare('[data-share-fragment="stats"]', {
+    keepSize: false,
+    styles: { width: '100%', maxWidth: '100%', margin: '0', background: 'transparent' }
+  });
+  if (statsClone) {
+    helpers.setStyles(statsClone, { filter: 'none' });
+    root.appendChild(statsClone);
+  }
+
+  // Summary items
+  if (context.summaryItems && context.summaryItems.length) {
+    var row = helpers.createElement('div');
+    helpers.setStyles(row, { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px' });
+    context.summaryItems.forEach(function(item) {
+      var cell = helpers.createElement('div');
+      helpers.setStyles(cell, { background: theme.surfaceColor, border: '1px solid ' + theme.borderColor, borderRadius: '12px', padding: '12px', textAlign: 'center' });
+      var val = helpers.createElement('div', '', item.value);
+      helpers.setStyles(val, { fontSize: '1.4rem', fontWeight: '800', color: item.emphasis ? theme.accentColor : theme.textColor });
+      var lbl = helpers.createElement('div', '', item.label);
+      helpers.setStyles(lbl, { fontSize: '0.72rem', color: theme.mutedTextColor, marginTop: '4px' });
+      cell.appendChild(val); cell.appendChild(lbl);
+      row.appendChild(cell);
+    });
+    root.appendChild(row);
+  }
+
+  // QR
+  var qrUrl = await helpers.createQRCodeImage(context);
+  if (qrUrl) {
+    var qrPanel = helpers.createElement('div');
+    helpers.setStyles(qrPanel, { display: 'flex', alignItems: 'center', gap: '16px', background: theme.surfaceColor, border: '1px solid ' + theme.borderColor, borderRadius: '16px', padding: '16px' });
+    var qrImg = helpers.createElement('img');
+    qrImg.src = qrUrl;
+    helpers.setStyles(qrImg, { width: '100px', height: '100px', borderRadius: '8px' });
+    var qrText = helpers.createElement('div');
+    var qt = helpers.createElement('div', '', context.meta.qrTitle);
+    helpers.setStyles(qt, { fontSize: '0.9rem', fontWeight: '700', color: theme.textColor });
+    var qc = helpers.createElement('div', '', context.meta.qrCaption);
+    helpers.setStyles(qc, { fontSize: '0.75rem', color: theme.mutedTextColor, marginTop: '6px' });
+    qrText.appendChild(qt); qrText.appendChild(qc);
+    helpers.appendChildren(qrPanel, [qrImg, qrText]);
+    root.appendChild(qrPanel);
+  }
+
+  return root;
+}
+
+document.getElementById('btn-share-victory').addEventListener('click', function() {
+  var stars = calcStars ? calcStars() : 1;
+  var starStr = stars >= 3 ? '⭐⭐⭐' : stars >= 2 ? '⭐⭐' : '⭐';
+  AppInsight.trackEvent('share_open', { chapter: G.chapter, level: G.levelIdx + 1 });
+  _share.open({
+    pageTitle: '架构师之路：Nginx要塞攻防战',
+    pageUrl: window.location.href,
+    layout: 'portrait',
+    qrPath: window.location.href,
+    shareTitle: '🏆 Nginx要塞守护者',
+    shareSubtitle: '第' + G.chapter + '章 第' + (G.levelIdx+1) + '关 · ' + (G.level ? G.level.name : ''),
+    shareDescription: '我在《架构师之路：Nginx要塞攻防战》中成功守护了核心数据区！掌握Nginx核心配置，成为顶尖网站架构师。',
+    shareBadge: starStr + ' ' + stars + '星通关',
+    copyText: '🏆 我在《Nginx要塞攻防战》第' + G.chapter + '章第' + (G.levelIdx+1) + '关获得' + stars + '星！总分' + G.score + '，快来挑战：' + window.location.href,
+    summaryItems: [
+      { label: '总分', value: String(G.score), emphasis: true },
+      { label: '核心血量', value: G.hp + '%', emphasis: true },
+      { label: '星级', value: stars + '/3 ⭐' }
+    ],
+    fileName: 'nginx-fortress-victory',
+    imageType: 'image/jpeg',
+    meta: {
+      qrTitle: '🔗 扫码来挑战',
+      qrCaption: 'Nginx要塞攻防战 · 80项核心技能',
+      theme: {
+        background: 'linear-gradient(160deg, #0a1628 0%, #0f2040 50%, #0a1628 100%)',
+        textColor: '#f8fafc',
+        mutedTextColor: 'rgba(248,250,252,0.6)',
+        accentColor: '#3b82f6',
+        surfaceColor: 'rgba(15,30,60,0.8)',
+        borderColor: 'rgba(59,130,246,0.3)'
+      }
+    }
+  }).then(function() {
+    AppInsight.trackEvent('share_poster_generated');
+  }).catch(function(e) {
+    console.error('share', e);
+    showToast('分享失败：' + e.message, 'error');
+  });
+});
+
+// ===== PLAYER NAME DEFAULT =====
+_api.bootstrap().then(function(session) {
+  if (!localStorage.getItem('playerName') && session.anon_user_id) {
+    var suffix = session.anon_user_id.slice(-4).toUpperCase();
+    localStorage.setItem('playerName', 'Player ' + suffix);
+  }
+}).catch(function(e){ console.error('bootstrap', e); });

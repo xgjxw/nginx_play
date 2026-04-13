@@ -1,0 +1,1072 @@
+(function (global) {
+  'use strict';
+
+  /* __RUNTIME_API_CLIENT_TEXT_START__ */
+  var CLIENT_TEXT = {
+    fileReaderUnsupportedSuffix: '所在环境不支持 FileReader，无法读取本地图片。',
+    readFailedSuffix: '读取失败。',
+    invalidReadResultSuffix: '读取结果不合法。',
+    mustBeObjectSuffix: '必须是对象。',
+    mustBeStringSuffix: '必须是字符串。',
+    cannotBeEmptySuffix: '不能为空。',
+    mustBeFiniteNumberSuffix: '必须是有限数字。',
+    invalidFileVisibilityMessage: 'visibility 仅支持 private 或 public。',
+    mediaTypeRequiredSuffix: '.media_type 不能为空；传原始 base64 时请提供 media_type，或直接传 File/Blob / data URL。',
+    mustBeFileOrBlobSuffix: '必须是 File 或 Blob。',
+    imageSourceModeSuffix: '必须且只能提供 url、base64 或 file 其中一种。',
+    imagesRequiredMessage: 'images 至少需要一张有效图片。',
+    invalidResponseFormatTypeMessage: 'response_format.type 仅支持 text、json_object。',
+    streamReadUnsupported: '当前环境不支持流式读取。',
+    textDecoderUnsupported: '当前环境不支持 TextDecoder，无法读取流式响应。',
+    streamIncompleteMessage: '流式响应未正常结束。',
+  };
+  /* __RUNTIME_API_CLIENT_TEXT_END__ */
+
+  function nowId(prefix) {
+    return (prefix || 'rk') + '-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
+  }
+
+  function isPlainObject(value) {
+    return Object.prototype.toString.call(value) === '[object Object]';
+  }
+
+  function trimString(value) {
+    return String(value).trim();
+  }
+
+  function getSafeStorage() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        return localStorage;
+      }
+    } catch (_err) {}
+    return null;
+  }
+
+  function isBlobLike(value) {
+    if (!value || typeof value !== 'object') return false;
+    if (typeof Blob !== 'undefined' && value instanceof Blob) return true;
+    return typeof value.arrayBuffer === 'function' && typeof value.type === 'string' && typeof value.size === 'number';
+  }
+
+  function extractDataUrlParts(value) {
+    if (typeof value !== 'string') return null;
+    var match = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(trimString(value));
+    if (!match) return null;
+    return {
+      media_type: match[1],
+      base64: match[2],
+    };
+  }
+
+  function readBlobAsDataUrl(blob, code, label) {
+    ensure(typeof FileReader !== 'undefined', code, label + CLIENT_TEXT.fileReaderUnsupportedSuffix);
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onerror = function () {
+        reject(createClientError(code, label + CLIENT_TEXT.readFailedSuffix));
+      };
+      reader.onload = function () {
+        if (typeof reader.result !== 'string') {
+          reject(createClientError(code, label + CLIENT_TEXT.invalidReadResultSuffix));
+          return;
+        }
+        resolve(reader.result);
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function toJsonSafe(response) {
+    return response.text().then(function (text) {
+      if (!text) return {};
+      try {
+        return JSON.parse(text);
+      } catch (_e) {
+        return { raw: text };
+      }
+    });
+  }
+
+  function parseEventStreamBlock(block) {
+    if (!block) return null;
+    var lines = block.split('\n');
+    var eventName = 'message';
+    var dataLines = [];
+
+    for (var i = 0; i < lines.length; i += 1) {
+      var line = lines[i] || '';
+      if (!line || line.charAt(0) === ':') continue;
+      if (line.indexOf('event:') === 0) {
+        eventName = trimString(line.slice(6)) || 'message';
+        continue;
+      }
+      if (line.indexOf('data:') === 0) {
+        dataLines.push(line.slice(5).replace(/^\s/, ''));
+      }
+    }
+
+    return {
+      event: eventName,
+      data: dataLines.join('\n'),
+    };
+  }
+
+  function getHandlersObject(value) {
+    return isPlainObject(value) ? value : {};
+  }
+
+  function createClientError(code, message, details) {
+    var err = new Error(message);
+    err.name = 'RuntimeAPIClientError';
+    err.code = code;
+    err.details = details || null;
+    err.isClientValidationError = true;
+    return err;
+  }
+
+  function ensure(condition, code, message, details) {
+    if (!condition) {
+      throw createClientError(code, message, details);
+    }
+  }
+
+  function assertPlainObject(value, code, label) {
+    ensure(isPlainObject(value), code, label + CLIENT_TEXT.mustBeObjectSuffix);
+  }
+
+  function assertAllowedKeys(value, allowedKeys, code, label) {
+    return;
+  }
+
+  function getOptionsObject(value, code, label) {
+    if (value === undefined || value === null) return {};
+    if (!isPlainObject(value)) return {};
+    return value;
+  }
+
+  function assertString(value, code, label, options) {
+    var opts = options || {};
+    ensure(typeof value === 'string', code, label + CLIENT_TEXT.mustBeStringSuffix);
+    if (opts.nonEmpty) {
+      ensure(trimString(value) !== '', code, label + CLIENT_TEXT.cannotBeEmptySuffix);
+    }
+    return value;
+  }
+
+  function normalizeOptionalString(value, code, label, options) {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') return undefined;
+    var normalized = value;
+    var trimmed = trimString(value);
+    if ((options && options.omitEmpty) && trimString(value) === '') {
+      return undefined;
+    }
+    if ((options && options.nonEmpty) && trimString(value) === '') {
+      return undefined;
+    }
+    if (typeof options === 'object' && typeof options.maxLength === 'number') {
+      if (trimmed.length > options.maxLength) return undefined;
+    }
+    return normalized;
+  }
+
+  function assertFiniteNumber(value, code, label) {
+    ensure(typeof value === 'number' && isFinite(value), code, label + CLIENT_TEXT.mustBeFiniteNumberSuffix);
+    return value;
+  }
+
+  function normalizeOptionalInteger(value, code, label, options) {
+    var opts = options || {};
+    if (value === undefined || value === null) return undefined;
+    if (!(typeof value === 'number' && isFinite(value) && Math.floor(value) === value)) {
+      return undefined;
+    }
+    if (typeof opts.min === 'number') {
+      if (value < opts.min) return undefined;
+    }
+    if (typeof opts.max === 'number') {
+      if (value > opts.max) return undefined;
+    }
+    return value;
+  }
+
+  function normalizeOptionalNumber(value, code, label) {
+    if (value === undefined || value === null) return undefined;
+    if (!(typeof value === 'number' && isFinite(value))) return undefined;
+    return value;
+  }
+
+  function sanitizeResponseFormat(value, code) {
+    if (value === undefined || value === null) return undefined;
+
+    var source = value;
+    if (typeof value === 'string') {
+      source = { type: value };
+    }
+
+    assertPlainObject(source, code, 'response_format');
+    var outputType = normalizeOptionalString(source.type, code, 'response_format.type', { omitEmpty: true }) || 'text';
+    ensure(
+      outputType === 'text' || outputType === 'json_object',
+      code,
+      CLIENT_TEXT.invalidResponseFormatTypeMessage
+    );
+    return { type: outputType };
+  }
+
+  function sanitizeHistory(history, code) {
+    if (history === undefined || history === null) return undefined;
+    if (!Array.isArray(history)) return undefined;
+
+    return history.reduce(function (items, item, index) {
+      var label = 'history[' + index + ']';
+      if (!isPlainObject(item)) {
+        return items;
+      }
+
+      var role = normalizeOptionalString(item.role, code, label + '.role', { nonEmpty: true });
+      if (role !== 'user' && role !== 'assistant') {
+        return items;
+      }
+
+      var text = normalizeOptionalString(item.text, code, label + '.text', { nonEmpty: true });
+      if (text === undefined) {
+        text = normalizeOptionalString(item.content, code, label + '.content', { nonEmpty: true });
+      }
+      if (text === undefined) {
+        return items;
+      }
+      items.push({
+        role: role,
+        text: text,
+      });
+      return items;
+    }, []);
+  }
+
+  function normalizeVisionBase64Image(base64Value, mediaTypeValue, code, label) {
+    var parsed = extractDataUrlParts(base64Value);
+    var mediaType = normalizeOptionalString(mediaTypeValue, code, label + '.media_type', { omitEmpty: true });
+
+    if (parsed) {
+      return {
+        base64: parsed.base64,
+        media_type: parsed.media_type,
+      };
+    }
+
+    ensure(mediaType !== undefined, code, label + CLIENT_TEXT.mediaTypeRequiredSuffix);
+    return {
+      base64: trimString(base64Value),
+      media_type: mediaType,
+    };
+  }
+
+  function normalizeVisionStringImage(value, code, label) {
+    var normalized = assertString(value, code, label, { nonEmpty: true });
+    var parsed = extractDataUrlParts(normalized);
+    if (parsed) {
+      return {
+        base64: parsed.base64,
+        media_type: parsed.media_type,
+      };
+    }
+    return { url: normalized };
+  }
+
+  async function normalizeVisionBlobImage(blob, code, label) {
+    ensure(isBlobLike(blob), code, label + CLIENT_TEXT.mustBeFileOrBlobSuffix);
+    return normalizeVisionBase64Image(await readBlobAsDataUrl(blob, code, label), undefined, code, label);
+  }
+
+  async function normalizeVisionImageItem(item, index, code) {
+    var label = 'images[' + index + ']';
+
+    if (typeof item === 'string') {
+      return normalizeVisionStringImage(item, code, label);
+    }
+
+    if (isBlobLike(item)) {
+      return normalizeVisionBlobImage(item, code, label);
+    }
+
+    assertPlainObject(item, code, label);
+    assertAllowedKeys(item, ['url', 'base64', 'media_type', 'detail', 'file'], code, label);
+
+    var url = normalizeOptionalString(item.url, code, label + '.url', { omitEmpty: true });
+    var base64Data = normalizeOptionalString(item.base64, code, label + '.base64', { omitEmpty: true });
+    var file = item.file;
+    var modeCount = (url !== undefined ? 1 : 0) + (base64Data !== undefined ? 1 : 0) + (file !== undefined && file !== null ? 1 : 0);
+    ensure(modeCount === 1, code, label + CLIENT_TEXT.imageSourceModeSuffix);
+
+    var sanitized;
+    if (url !== undefined) {
+      sanitized = normalizeVisionStringImage(url, code, label + '.url');
+    } else if (base64Data !== undefined) {
+      sanitized = normalizeVisionBase64Image(base64Data, item.media_type, code, label);
+    } else {
+      sanitized = await normalizeVisionBlobImage(file, code, label + '.file');
+    }
+
+    var detail = normalizeOptionalString(item.detail, code, label + '.detail', { omitEmpty: true });
+    if (detail !== undefined) {
+      sanitized.detail = detail;
+    }
+    return sanitized;
+  }
+
+  async function sanitizeImages(images, code, requireNonEmpty) {
+    if (images === undefined || images === null) return undefined;
+    if (!Array.isArray(images)) return [];
+
+    var normalized = [];
+    for (var index = 0; index < images.length; index += 1) {
+      try {
+        normalized.push(await normalizeVisionImageItem(images[index], index, code));
+      } catch (_err) {}
+    }
+
+    if (requireNonEmpty) {
+      ensure(normalized.length > 0, code, CLIENT_TEXT.imagesRequiredMessage);
+    }
+    return normalized;
+  }
+
+  function sanitizeChatOptions(options) {
+    var code = 'INVALID_CHAT_OPTIONS';
+    var source = getOptionsObject(options, code, 'options');
+
+    var sanitized = {
+      system_prompt: '',
+      history: [],
+    };
+
+    var systemPrompt = normalizeOptionalString(source.system_prompt, code, 'system_prompt', { omitEmpty: true });
+    if (systemPrompt !== undefined) sanitized.system_prompt = systemPrompt;
+
+    var history = sanitizeHistory(source.history, code);
+    if (history !== undefined) sanitized.history = history;
+
+    var temperature = normalizeOptionalNumber(source.temperature, code, 'temperature');
+    if (temperature !== undefined) sanitized.temperature = temperature;
+
+    var maxTokens = normalizeOptionalInteger(source.max_tokens, code, 'max_tokens', { min: 1 });
+    if (maxTokens !== undefined) sanitized.max_tokens = maxTokens;
+
+    var responseFormat = sanitizeResponseFormat(source.response_format, code);
+    if (responseFormat !== undefined) sanitized.response_format = responseFormat;
+
+    return sanitized;
+  }
+
+  async function sanitizeVisionRequest(prompt, images, options) {
+    var code = 'INVALID_VISION_OPTIONS';
+    var source = getOptionsObject(options, code, 'options');
+
+    var sanitized = {
+      prompt: prompt,
+      system_prompt: '',
+      history: [],
+      images: await sanitizeImages(images, code, true),
+    };
+
+    var systemPrompt = normalizeOptionalString(source.system_prompt, code, 'system_prompt', { omitEmpty: true });
+    if (systemPrompt !== undefined) sanitized.system_prompt = systemPrompt;
+
+    var history = sanitizeHistory(source.history, code);
+    if (history !== undefined) sanitized.history = history;
+
+    var maxTokens = normalizeOptionalInteger(source.max_tokens, code, 'max_tokens', { min: 1 });
+    if (maxTokens !== undefined) sanitized.max_tokens = maxTokens;
+
+    var responseFormat = sanitizeResponseFormat(source.response_format, code);
+    if (responseFormat !== undefined) sanitized.response_format = responseFormat;
+
+    return sanitized;
+  }
+
+  function sanitizeImageGenerateOptions(prompt, options) {
+    var code = 'INVALID_IMAGE_GENERATE_OPTIONS';
+    var source = getOptionsObject(options, code, 'options');
+
+    var sanitized = {
+      prompt: prompt,
+      size: '1024x1024',
+      quality: '',
+      count: 1,
+    };
+
+    var size = normalizeOptionalString(source.size, code, 'size', { nonEmpty: true });
+    if (size !== undefined) sanitized.size = size;
+
+    var quality = normalizeOptionalString(source.quality, code, 'quality', { omitEmpty: true });
+    if (quality !== undefined) sanitized.quality = quality;
+
+    var count = normalizeOptionalInteger(source.count, code, 'count', { min: 1, max: 2 });
+    if (count !== undefined) sanitized.count = count;
+
+    return sanitized;
+  }
+
+  function sanitizeLeaderboardOptions(options) {
+    var code = 'INVALID_LEADERBOARD_OPTIONS';
+    var source = getOptionsObject(options, code, 'options');
+
+    var sanitized = {
+      page: 1,
+      page_size: 20,
+      window: 'all',
+    };
+
+    var page = normalizeOptionalInteger(source.page, code, 'page', { min: 1 });
+    var pageSize = normalizeOptionalInteger(source.page_size, code, 'page_size', { min: 1, max: 100 });
+    var windowValue = normalizeOptionalString(source.window, code, 'window', { nonEmpty: true });
+
+    if (page !== undefined) sanitized.page = page;
+    if (pageSize !== undefined) sanitized.page_size = pageSize;
+    if (windowValue !== undefined && ['all', 'day', 'week', 'month'].indexOf(windowValue) !== -1) {
+      sanitized.window = windowValue;
+    }
+
+    return sanitized;
+  }
+
+  function sanitizeUploadOptions(options, onProgress) {
+    var code = 'INVALID_UPLOAD_OPTIONS';
+    var source = options;
+    var progressHandler = onProgress;
+
+    if (typeof source === 'function' && progressHandler === undefined) {
+      progressHandler = source;
+      source = {};
+    }
+
+    source = getOptionsObject(source, code, 'options');
+    if (typeof source.onProgress === 'function' && progressHandler === undefined) {
+      progressHandler = source.onProgress;
+    }
+
+    var visibility = normalizeOptionalString(source.visibility, code, 'visibility', { omitEmpty: true });
+    if (visibility !== undefined) {
+      ensure(
+        visibility === 'private' || visibility === 'public',
+        code,
+        CLIENT_TEXT.invalidFileVisibilityMessage
+      );
+    }
+
+    return {
+      visibility: visibility || 'private',
+      onProgress: typeof progressHandler === 'function' ? progressHandler : null,
+    };
+  }
+
+  function normalizeOptionalCallArgs(options, timeoutMs) {
+    if (typeof options === 'number' && timeoutMs === undefined) {
+      return { options: {}, timeoutMs: options };
+    }
+    return { options: options || {}, timeoutMs: timeoutMs };
+  }
+
+  function normalizeStreamCallArgs(options, handlers, timeoutMs) {
+    var resolvedHandlers = handlers;
+    var resolvedTimeoutMs = timeoutMs;
+    if (typeof handlers === 'number' && timeoutMs === undefined) {
+      resolvedHandlers = {};
+      resolvedTimeoutMs = handlers;
+    }
+    return {
+      options: options || {},
+      handlers: getHandlersObject(resolvedHandlers),
+      timeoutMs: resolvedTimeoutMs,
+    };
+  }
+
+  function sanitizeSubmitScoreOptions(score, options) {
+    var code = 'INVALID_LEADERBOARD_SUBMIT_OPTIONS';
+    var source = getOptionsObject(options, code, 'options');
+
+    var sanitized = {
+      score: score,
+      meta: {},
+    };
+
+    var normalizedPlayerName = normalizeOptionalString(source.playerName, code, 'playerName', { omitEmpty: true, maxLength: 80 });
+    if (normalizedPlayerName !== undefined) {
+      normalizedPlayerName = trimString(normalizedPlayerName);
+      sanitized.player_name = normalizedPlayerName;
+    }
+
+    if (isPlainObject(source.meta)) {
+      sanitized.meta = source.meta;
+    }
+
+    return sanitized;
+  }
+
+  function RuntimeAPIClient(options) {
+    options = options || {};
+    this.base = options.base || '/api/runtime';
+    this.autoBootstrap = options.autoBootstrap !== false;
+    this.timeout = typeof options.timeout === 'number' ? options.timeout : 120000;
+    this.waitParseTimeoutMs = typeof options.waitParseTimeoutMs === 'number' ? options.waitParseTimeoutMs : 300000;
+    this.waitParseIntervalMs = typeof options.waitParseIntervalMs === 'number' ? options.waitParseIntervalMs : 1500;
+    this.chatTimeoutMs = typeof options.chatTimeoutMs === 'number' ? options.chatTimeoutMs : 180000;
+    this.visionTimeoutMs = typeof options.visionTimeoutMs === 'number' ? options.visionTimeoutMs : 300000;
+    this.imageGenerateTimeoutMs = typeof options.imageGenerateTimeoutMs === 'number' ? options.imageGenerateTimeoutMs : 600000;
+    this.onLog = options.onLog || null;
+    this.onError = options.onError || null;
+    this._bootstrapPromise = null;
+    this._hasBootstrapped = false;
+
+    RuntimeAPIClient._defaultInstance = this;
+
+    if (this.autoBootstrap) {
+      this._startBootstrap(false);
+    }
+  }
+
+  RuntimeAPIClient.prototype._log = function (event, payload) {
+    if (typeof this.onLog === 'function') {
+      this.onLog(event, payload || {});
+    }
+  };
+
+  RuntimeAPIClient.prototype._handleClientError = function (err) {
+    if (typeof this.onError === 'function') {
+      this.onError(err);
+    }
+    throw err;
+  };
+
+  RuntimeAPIClient.prototype._startBootstrap = function (force) {
+    var self = this;
+
+    if (this._bootstrapPromise) {
+      return this._bootstrapPromise;
+    }
+
+    if (!force && this._hasBootstrapped) {
+      return Promise.resolve();
+    }
+
+    var promise = this._requestRaw('/session/bootstrap', { method: 'POST' }, false).then(function (data) {
+      self._hasBootstrapped = true;
+      return data;
+    }, function (err) {
+      self._hasBootstrapped = false;
+      throw err;
+    });
+
+    this._bootstrapPromise = promise;
+    promise.then(function () {
+      if (self._bootstrapPromise === promise) {
+        self._bootstrapPromise = null;
+      }
+    }, function () {
+      if (self._bootstrapPromise === promise) {
+        self._bootstrapPromise = null;
+      }
+    });
+    promise.catch(function () {});
+    return promise;
+  };
+
+  RuntimeAPIClient.prototype._ensureBootstrapReady = function (path) {
+    if (path === '/session/bootstrap' || this.autoBootstrap === false) {
+      return Promise.resolve();
+    }
+    if (this._bootstrapPromise) {
+      return this._bootstrapPromise;
+    }
+    if (this._hasBootstrapped) {
+      return Promise.resolve();
+    }
+    return this._startBootstrap(false);
+  };
+
+  RuntimeAPIClient.prototype._requestRaw = async function (path, options, shouldRetryAfterBootstrap, timeoutMs) {
+    var self = this;
+    var url = this.base.replace(/\/$/, '') + path;
+    var init = Object.assign({
+      credentials: 'include',
+      headers: {},
+    }, options || {});
+    var requestTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : this.timeout;
+
+    init.headers = Object.assign({}, init.headers, {
+      'X-Request-ID': nowId('req'),
+    });
+
+    if (init.method && init.method !== 'GET' && init.method !== 'HEAD') {
+      if (!init.headers['Idempotency-Key']) {
+        init.headers['Idempotency-Key'] = nowId('idem');
+      }
+    }
+
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, requestTimeoutMs);
+    init.signal = controller.signal;
+
+    var response;
+    try {
+      response = await fetch(url, init);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if ((response.status === 401 || response.status === 419) && shouldRetryAfterBootstrap !== false) {
+      await this.bootstrap();
+      return this._requestRaw(path, options, false, timeoutMs);
+    }
+
+    var body = await toJsonSafe(response);
+    if (!response.ok) {
+      var message = (body && body.error && body.error.message) || ('Runtime API error: ' + response.status);
+      var err = new Error(message);
+      err.status = response.status;
+      err.body = body;
+      if (typeof self.onError === 'function') self.onError(err);
+      throw err;
+    }
+
+    this._log('request.success', { path: path, status: response.status });
+    return body;
+  };
+
+  RuntimeAPIClient.prototype._request = async function (path, options, shouldRetryAfterBootstrap, timeoutMs) {
+    await this._ensureBootstrapReady(path);
+    return this._requestRaw(path, options, shouldRetryAfterBootstrap, timeoutMs);
+  };
+
+  RuntimeAPIClient.prototype._requestStreamRaw = async function (path, options, shouldRetryAfterBootstrap, timeoutMs, handlers) {
+    var self = this;
+    var url = this.base.replace(/\/$/, '') + path;
+    var init = Object.assign({
+      credentials: 'include',
+      headers: {},
+    }, options || {});
+    var requestTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : this.timeout;
+
+    init.headers = Object.assign({}, init.headers, {
+      'Accept': 'text/event-stream, application/json',
+      'X-Request-ID': nowId('req'),
+    });
+
+    if (init.method && init.method !== 'GET' && init.method !== 'HEAD') {
+      if (!init.headers['Idempotency-Key']) {
+        init.headers['Idempotency-Key'] = nowId('idem');
+      }
+    }
+
+    var controller = new AbortController();
+    var timer = setTimeout(function () { controller.abort(); }, requestTimeoutMs);
+    init.signal = controller.signal;
+
+    var response;
+    try {
+      response = await fetch(url, init);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if ((response.status === 401 || response.status === 419) && shouldRetryAfterBootstrap !== false) {
+      await this.bootstrap();
+      return this._requestStreamRaw(path, options, false, timeoutMs, handlers);
+    }
+
+    if (!response.ok) {
+      var errorBody = await toJsonSafe(response);
+      var message = (errorBody && errorBody.error && errorBody.error.message) || ('Runtime API error: ' + response.status);
+      var err = new Error(message);
+      err.status = response.status;
+      err.body = errorBody;
+      if (typeof self.onError === 'function') self.onError(err);
+      if (typeof handlers.onError === 'function') handlers.onError(err);
+      throw err;
+    }
+
+    ensure(response.body && typeof response.body.getReader === 'function', 'STREAM_UNSUPPORTED', CLIENT_TEXT.streamReadUnsupported);
+
+    var reader = response.body.getReader();
+    var decoder = typeof TextDecoder === 'function' ? new TextDecoder() : null;
+    ensure(decoder, 'STREAM_UNSUPPORTED', CLIENT_TEXT.textDecoderUnsupported);
+
+    var buffer = '';
+    var finalText = '';
+
+    function processBufferedEvents() {
+      var separatorIndex = buffer.indexOf('\n\n');
+      while (separatorIndex !== -1) {
+        var rawBlock = buffer.slice(0, separatorIndex);
+        buffer = buffer.slice(separatorIndex + 2);
+        separatorIndex = buffer.indexOf('\n\n');
+
+        var parsed = parseEventStreamBlock(rawBlock);
+        if (!parsed || !parsed.data) {
+          continue;
+        }
+
+        var payload;
+        try {
+          payload = JSON.parse(parsed.data);
+        } catch (_err) {
+          payload = { raw: parsed.data };
+        }
+
+        if (parsed.event === 'start') {
+          if (typeof handlers.onStart === 'function') handlers.onStart(payload);
+          continue;
+        }
+
+        if (parsed.event === 'delta') {
+          finalText += (payload && payload.delta) || '';
+          if (typeof handlers.onDelta === 'function') {
+            handlers.onDelta((payload && payload.delta) || '', finalText, payload || {});
+          }
+          continue;
+        }
+
+        if (parsed.event === 'done') {
+          var result = Object.assign({ text: finalText }, payload || {});
+          if (typeof handlers.onComplete === 'function') handlers.onComplete(result, payload || {});
+          self._log('request.success', { path: path, status: response.status, streamed: true });
+          return result;
+        }
+
+        if (parsed.event === 'error') {
+          var errorPayload = payload && payload.error ? payload : { error: payload || {} };
+          var errorMessage = (errorPayload.error && errorPayload.error.message) || 'Runtime stream error';
+          var streamError = new Error(errorMessage);
+          streamError.body = errorPayload;
+          if (typeof self.onError === 'function') self.onError(streamError);
+          if (typeof handlers.onError === 'function') handlers.onError(streamError);
+          throw streamError;
+        }
+
+        if (typeof handlers.onEvent === 'function') {
+          handlers.onEvent(parsed.event, payload || {});
+        }
+      }
+
+      return null;
+    }
+
+    try {
+      while (true) {
+        var chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        buffer = buffer.replace(/\r\n/g, '\n');
+        var loopResult = processBufferedEvents();
+        if (loopResult) return loopResult;
+      }
+
+      buffer += decoder.decode();
+      buffer = buffer.replace(/\r\n/g, '\n');
+      var flushResult = processBufferedEvents();
+      if (flushResult) return flushResult;
+
+      var incompleteError = new Error(CLIENT_TEXT.streamIncompleteMessage);
+      incompleteError.code = 'STREAM_INCOMPLETE';
+      incompleteError.partialText = finalText;
+      incompleteError.body = {
+        error: {
+          code: 'STREAM_INCOMPLETE',
+          message: CLIENT_TEXT.streamIncompleteMessage,
+          partial_text: finalText,
+        },
+      };
+      if (typeof self.onError === 'function') self.onError(incompleteError);
+      if (typeof handlers.onError === 'function') handlers.onError(incompleteError);
+      throw incompleteError;
+    } finally {
+      if (reader && typeof reader.releaseLock === 'function') {
+        reader.releaseLock();
+      }
+    }
+  };
+
+  RuntimeAPIClient.prototype._requestStream = async function (path, options, shouldRetryAfterBootstrap, timeoutMs, handlers) {
+    await this._ensureBootstrapReady(path);
+    return this._requestStreamRaw(path, options, shouldRetryAfterBootstrap, timeoutMs, handlers);
+  };
+
+  RuntimeAPIClient.prototype.bootstrap = function () {
+    return this._startBootstrap(true);
+  };
+
+  RuntimeAPIClient.prototype.getConfig = function () {
+    return this._request('/apps/current/config', { method: 'GET' }, true);
+  };
+
+  RuntimeAPIClient.prototype.getFileUrl = function (fileId, options) {
+    var source = getOptionsObject(options, 'INVALID_FILE_URL_OPTIONS', 'file url options');
+    var mode = normalizeOptionalString(source.mode, 'INVALID_FILE_URL_OPTIONS', 'mode', { omitEmpty: true });
+    var normalizedMode = mode === 'download' ? 'download' : 'preview';
+
+    try {
+      assertString(fileId, 'INVALID_FILE_ID', 'fileId', { nonEmpty: true });
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var query = normalizedMode === 'download' ? '?mode=download' : '';
+    return this.base.replace(/\/$/, '') + '/files/' + encodeURIComponent(fileId) + '/content' + query;
+  };
+
+  RuntimeAPIClient.prototype.downloadFile = async function (fileId) {
+    await this.bootstrap();
+    var url = this.getFileUrl(fileId, { mode: 'download' });
+
+    if (typeof document === 'undefined' || !document.body || typeof document.createElement !== 'function') {
+      return url;
+    }
+
+    var link = document.createElement('a');
+    link.href = url;
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    return url;
+  };
+
+  RuntimeAPIClient.prototype.uploadFile = function (file, options, onProgress) {
+    try {
+      ensure(file !== undefined && file !== null, 'INVALID_UPLOAD_FILE', 'file ' + CLIENT_TEXT.cannotBeEmptySuffix);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var uploadOptions;
+    try {
+      uploadOptions = sanitizeUploadOptions(options, onProgress);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var form = new FormData();
+    form.append('file', file);
+    form.append('visibility', uploadOptions.visibility);
+    var progressHandler = uploadOptions.onProgress;
+    if (progressHandler) progressHandler(0);
+    return this._request('/files/upload', { method: 'POST', body: form }, true).then(function (data) {
+      if (progressHandler) progressHandler(100);
+      return data;
+    });
+  };
+
+  RuntimeAPIClient.prototype.triggerParse = function (fileId, asyncMode, timeoutMs) {
+    try {
+      assertString(fileId, 'INVALID_FILE_ID', 'fileId', { nonEmpty: true });
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var normalizedAsyncMode = asyncMode === undefined ? false : asyncMode;
+    return this._request('/files/' + encodeURIComponent(fileId) + '/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ async_mode: normalizedAsyncMode }),
+    }, true, timeoutMs);
+  };
+
+  RuntimeAPIClient.prototype.getParseResult = function (fileId, timeoutMs) {
+    try {
+      assertString(fileId, 'INVALID_FILE_ID', 'fileId', { nonEmpty: true });
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    return this._request('/files/' + encodeURIComponent(fileId) + '/parse-result', { method: 'GET' }, true, timeoutMs);
+  };
+
+  RuntimeAPIClient.prototype.waitParseResult = async function (fileId, opts) {
+    try {
+      assertString(fileId, 'INVALID_FILE_ID', 'fileId', { nonEmpty: true });
+      opts = getOptionsObject(opts, 'INVALID_WAIT_OPTIONS', 'opts');
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var timeoutMs = normalizeOptionalInteger(opts.timeoutMs, 'INVALID_WAIT_OPTIONS', 'timeoutMs', { min: 1 });
+    var intervalMs = normalizeOptionalInteger(opts.intervalMs, 'INVALID_WAIT_OPTIONS', 'intervalMs', { min: 1 });
+    var requestTimeoutMs = normalizeOptionalInteger(opts.requestTimeoutMs, 'INVALID_WAIT_OPTIONS', 'requestTimeoutMs', { min: 1 });
+    var onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+    var start = Date.now();
+
+    timeoutMs = timeoutMs !== undefined ? timeoutMs : this.waitParseTimeoutMs;
+    intervalMs = intervalMs !== undefined ? intervalMs : this.waitParseIntervalMs;
+
+    while (true) {
+      var result = await this.getParseResult(fileId, requestTimeoutMs);
+      if (typeof onProgress === 'function') onProgress(result);
+      if (result.parse_status === 'success' || result.parse_status === 'failed') {
+        return result;
+      }
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('Parse wait timeout');
+      }
+      await new Promise(function (resolve) { setTimeout(resolve, intervalMs); });
+    }
+  };
+
+  RuntimeAPIClient.prototype.chat = function (prompt, options, timeoutMs) {
+    var requestPayload;
+    var normalizedCall = normalizeOptionalCallArgs(options, timeoutMs);
+    try {
+      requestPayload = sanitizeChatOptions(normalizedCall.options);
+      requestPayload.prompt = prompt;
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var requestTimeoutMs = typeof normalizedCall.timeoutMs === 'number' ? normalizedCall.timeoutMs : this.chatTimeoutMs;
+    return this._request('/llm/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true, requestTimeoutMs);
+  };
+
+  RuntimeAPIClient.prototype.chatStream = function (prompt, options, handlers, timeoutMs) {
+    var requestPayload;
+    var normalizedCall = normalizeStreamCallArgs(options, handlers, timeoutMs);
+    try {
+      requestPayload = sanitizeChatOptions(normalizedCall.options);
+      requestPayload.prompt = prompt;
+      requestPayload.stream = true;
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var requestTimeoutMs = typeof normalizedCall.timeoutMs === 'number' ? normalizedCall.timeoutMs : this.chatTimeoutMs;
+    return this._requestStream('/llm/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true, requestTimeoutMs, normalizedCall.handlers);
+  };
+
+  RuntimeAPIClient.prototype.vision = async function (prompt, images, options, timeoutMs) {
+    var requestPayload;
+    var normalizedCall = normalizeOptionalCallArgs(options, timeoutMs);
+    try {
+      requestPayload = await sanitizeVisionRequest(prompt, images, normalizedCall.options);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var requestTimeoutMs = typeof normalizedCall.timeoutMs === 'number' ? normalizedCall.timeoutMs : this.visionTimeoutMs;
+    return this._request('/llm/vision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true, requestTimeoutMs);
+  };
+
+  RuntimeAPIClient.prototype.visionStream = async function (prompt, images, options, handlers, timeoutMs) {
+    var requestPayload;
+    var normalizedCall = normalizeStreamCallArgs(options, handlers, timeoutMs);
+    try {
+      requestPayload = await sanitizeVisionRequest(prompt, images, normalizedCall.options);
+      requestPayload.stream = true;
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var requestTimeoutMs = typeof normalizedCall.timeoutMs === 'number' ? normalizedCall.timeoutMs : this.visionTimeoutMs;
+    return this._requestStream('/llm/vision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true, requestTimeoutMs, normalizedCall.handlers);
+  };
+
+  RuntimeAPIClient.prototype.imageGenerate = function (prompt, options, timeoutMs) {
+    var requestPayload;
+    var normalizedCall = normalizeOptionalCallArgs(options, timeoutMs);
+    try {
+      requestPayload = sanitizeImageGenerateOptions(prompt, normalizedCall.options);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var requestTimeoutMs = typeof normalizedCall.timeoutMs === 'number' ? normalizedCall.timeoutMs : this.imageGenerateTimeoutMs;
+    return this._request('/llm/image-generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true, requestTimeoutMs);
+  };
+
+  RuntimeAPIClient.prototype.submitScore = function (boardKey, score, options) {
+    var requestPayload;
+    try {
+      assertString(boardKey, 'INVALID_BOARD_KEY', 'boardKey', { nonEmpty: true });
+      requestPayload = sanitizeSubmitScoreOptions(score, options);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    return this._request('/leaderboards/' + encodeURIComponent(boardKey) + '/submit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestPayload),
+    }, true);
+  };
+
+  RuntimeAPIClient.prototype.getLeaderboard = function (boardKey, params) {
+    var queryParams;
+    try {
+      assertString(boardKey, 'INVALID_BOARD_KEY', 'boardKey', { nonEmpty: true });
+      queryParams = sanitizeLeaderboardOptions(params);
+    } catch (err) {
+      return this._handleClientError(err);
+    }
+
+    var p = new URLSearchParams(queryParams || {});
+    var suffix = p.toString() ? ('?' + p.toString()) : '';
+    return this._request('/leaderboards/' + encodeURIComponent(boardKey) + suffix, { method: 'GET' }, true);
+  };
+
+  RuntimeAPIClient.getDefaultInstance = function () {
+    if (!(RuntimeAPIClient._defaultInstance instanceof RuntimeAPIClient)) {
+      RuntimeAPIClient._defaultInstance = new RuntimeAPIClient();
+    }
+    return RuntimeAPIClient._defaultInstance;
+  };
+
+  var STATIC_COMPAT_METHODS = [
+    'bootstrap',
+    'getConfig',
+    'getFileUrl',
+    'downloadFile',
+    'uploadFile',
+    'triggerParse',
+    'getParseResult',
+    'waitParseResult',
+    'chat',
+    'chatStream',
+    'vision',
+    'visionStream',
+    'imageGenerate',
+    'submitScore',
+    'getLeaderboard',
+  ];
+
+  function attachStaticCompatMethod(methodName) {
+    RuntimeAPIClient[methodName] = function () {
+      var client = RuntimeAPIClient.getDefaultInstance();
+      return client[methodName].apply(client, arguments);
+    };
+  }
+
+  for (var i = 0; i < STATIC_COMPAT_METHODS.length; i += 1) {
+    attachStaticCompatMethod(STATIC_COMPAT_METHODS[i]);
+  }
+
+  global.RuntimeAPIClient = RuntimeAPIClient;
+})(window);
